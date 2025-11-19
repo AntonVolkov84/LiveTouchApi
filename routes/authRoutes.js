@@ -7,7 +7,9 @@ import {
   requestPasswordReset,
   resetPassword,
   confirmEmail,
-} from "../controllers/authController.js";
+  updateAvatar,
+  updateProfile
+  } from "../controllers/authController.js";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
 
 const router = express.Router();
@@ -25,5 +27,10 @@ router.get("/confirm-email", confirmEmail);
 router.post("/forgot-password", requestPasswordReset);
 
 router.get("/reset-password", resetPassword);
+
+router.put("/update-avatar", authenticateToken,updateAvatar);
+
+router.put("/update-profile", authenticateToken, updateProfile);
+
 
 export default router;

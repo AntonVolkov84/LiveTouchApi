@@ -4,6 +4,7 @@ import { pool } from "../db/db.js";
 import crypto from "crypto";
 import { Resend } from "resend";
 import { verifyCaptcha } from '../utils/verifyRecaptcha.js'
+import { minioClient } from '../minio.js'
 
 const resend = new Resend(process.env.RESEND_API);
 
@@ -122,6 +123,7 @@ export const me = async (req, res) => {
       usersurname: result.rows[0].usersurname,
       email: result.rows[0].email,
       avatar_url: result.rows[0].avatar_url,
+      phone: result.rows[0].phone,
       bio: result.rows[0].bio,
       is_verified: result.rows[0].is_verified,
       created_at: result.rows[0].created_at
@@ -265,4 +267,83 @@ export const confirmEmail = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+export const updateAvatar = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { avatar_url } = req.body;
+    if (!avatar_url) {
+      return res.status(400).json({ message: "avatar_url is required" });
+    }
+    const oldData = await pool.query(
+      "SELECT avatar_url FROM users WHERE id = $1",
+      [userId]
+    );
+    const oldUrl = oldData.rows[0]?.avatar_url;
+    if (oldUrl) {
+      try {
+        const parts = oldUrl.replace("https://api.livetouch.chat/", "").split("/");
+        const bucket = parts[0];
+        const object = parts.slice(1).join("/");
+        console.log(parts)
+        console.log(bucket)
+        console.log(object)
+        await minioClient.removeObject(bucket, object);
+        console.log("Old avatar removed:", oldUrl);
+      } catch (err) {
+        console.warn("Cannot delete old avatar (maybe not exist):", err.message);
+      }
+    }
+    await pool.query(
+      "UPDATE users SET avatar_url = $1 WHERE id = $2",
+      [avatar_url, userId]
+    );
+    res.json({ message: "Avatar updated", avatar_url });
+  } catch (err) {
+    console.error("updateAvatar error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
+export const updateProfile = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    let { username, surname, bio, phone } = req.body;
+    const sanitize = (str) =>
+      String(str || "")
+        .replace(/<script.*?>.*?<\/script>/gi, "")
+        .replace(/<\/?[^>]+(>|$)/g, "") 
+        .trim();
 
+    username = sanitize(username);
+    surname = sanitize(surname);
+    bio = sanitize(bio);
+    phone = sanitize(phone);
+
+    if (username.length > 32) {
+      return res.status(400).json({ message: "Username too long" });
+    }
+    if (surname.length > 32) {
+      return res.status(400).json({ message: "Surname too long" });
+    }
+    if (bio.length > 500) {
+      return res.status(400).json({ message: "Bio too long" });
+    }
+
+    await pool.query(
+      `UPDATE users 
+       SET username = $1, usersurname = $2, bio = $3, phone = $4
+       WHERE id = $5`,
+      [username, surname, bio, phone, userId]
+    );
+
+    res.status(200).json({
+      message: "Profile updated",
+      username,
+      surname,
+      bio,
+      phone,
+    });
+  } catch (err) {
+    console.error("updateProfile error:", err);
+    res.status(500).json({ message: "Server error" });
+  }
+};
