@@ -7,6 +7,7 @@ import { WebSocketServer } from 'ws';
 import * as minioController from './controllers/minioController.js';
 import multer from "multer";
 import authRoutes from "./routes/authRoutes.js";
+import chatsRoutes from "./routes/chatsRoutes.js"
 
 const app = express();
 app.use(cors());
@@ -15,6 +16,7 @@ app.use(express.json());
 const upload = multer({ dest: "uploads/" });
 
 app.use("/auth", authRoutes);
+app.use("/chats", chatsRoutes);
 
 app.post("/upload", upload.single("file"), minioController.uploadMinIO)
 
@@ -22,26 +24,30 @@ app.post("/upload", upload.single("file"), minioController.uploadMinIO)
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
-
+export const clientsMap = new Map();
 wss.on("connection", (ws) => {
-  console.log("WS client connected");
-  ws.on("message", (message) => {
+ ws.on("message", (message) => {
     try {
-      console.log("Received:", message.toString());
-      ws.send("Echo: " + message.toString());
+      const data = JSON.parse(message.toString());
+      if (data.userId) {
+        clientsMap.set(data.userId, ws);
+        console.log("Registered userId:", data.userId);
+      }
     } catch (err) {
-      console.error("Error handling message:", err);
-      ws.send("Error: " + err.message);  
+      console.error("WS message error:", err);
     }
   });
-  ws.on("close", () => console.log("WS client disconnected"));
-  ws.on("error", (err) => {
-    console.error("WS Error:", err);
-    ws.send("Error: WebSocket error");  
+  ws.on("close", () => {
+    for (const [userId, client] of clientsMap.entries()) {
+      if (client === ws) {
+        clientsMap.delete(userId);
+      }
+    }
   });
 });
-
 const PORT = process.env.PORT || 3002;
 server.listen(PORT, () => {
   console.log("HTTP Server running on port 3002");
 });
+
+export { wss };

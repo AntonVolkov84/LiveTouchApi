@@ -14,7 +14,8 @@ const pool = new Pool({
 async function createTable() {
   const client = await pool.connect();
   try {
-    const query = `
+    // users
+    await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
         username VARCHAR(50) UNIQUE NOT NULL,
@@ -37,14 +38,30 @@ async function createTable() {
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
       );
-    `;
-    await client.query(query);
-    } catch (error) {
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id SERIAL PRIMARY KEY,
+        type VARCHAR(10) NOT NULL, 
+        name VARCHAR(255),    
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS chat_participants (
+        id SERIAL PRIMARY KEY,
+        chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
+        user_id INT NOT NULL,
+        UNIQUE(chat_id, user_id)
+      );
+    `);
+  } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {
-    client.release(); 
+    client.release();
   }
 }
+
 
 createTable();
 
