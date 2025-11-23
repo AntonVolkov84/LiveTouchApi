@@ -18,7 +18,6 @@ export const verifyCaptcha = async (token, projectId) => {
 
   try {
     const [response] = await client.createAssessment(request);
-    console.log(response)
     const isValid = response.tokenProperties?.valid;
     return { success: isValid, response };
   } catch (err) {
