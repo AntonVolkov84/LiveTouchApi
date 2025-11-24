@@ -69,7 +69,7 @@ export const getUserChats = async (req, res) => {
       chats.map(async (chat) => {
         if (chat.type === "private") {
           const { rows } = await pool.query(
-            `SELECT u.id, u.username, u.usersurname, u.email, u.avatar_url, u.phone
+            `SELECT u.id, u.username, u.usersurname, u.email, u.avatar_url, u.phone, u.public_key
              FROM chat_participants cp
              JOIN users u ON cp.user_id = u.id
              WHERE cp.chat_id = $1 AND cp.user_id != $2`,
@@ -90,19 +90,15 @@ export const createGroupChat = async (req, res) => {
   try {
     const ownerId = req.user.id;
     const { name, participants } = req.body;
-
     if (!name || !Array.isArray(participants) || participants.length === 0) {
       return res.status(400).json({ message: "Нужно указать название группы и список участников" });
     }
-
     const emails = [...participants];
     const usersRes = await pool.query(
-      `SELECT id, email FROM users WHERE email = ANY($1::text[])`,
-      [emails]
+      `SELECT id, email FROM users WHERE email = ANY(ARRAY(SELECT unnest($1::text[])))`,
+      [participants]
     );
-
     const foundUsers = usersRes.rows.map(u => u.id);
-
     if (foundUsers.length === 0) {
       return res.status(404).json({ message: "Указанные пользователи не найдены" });
     }
@@ -164,6 +160,13 @@ export const leaveChat = async (req, res) => {
 
       // Удалить сам чат
       await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
+      const client = clientsMap.get(userId);
+        if (client && client.readyState === 1) {
+          client.send(JSON.stringify({
+            type: "chat_removed",
+            chat_id: chatId
+          }));
+        }
 
       return res.status(200).json({
         message: "Вы покинули чат. Чат удалён полностью, т.к. участников не осталось."

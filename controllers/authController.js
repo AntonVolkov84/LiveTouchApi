@@ -27,13 +27,13 @@ const generateTokens = (user) => {
 
 export const register =  async (req, res) => {
   try {
-    const { username, usersurname, password, captchaToken } = req.body;
+    const { username, usersurname, password, captchaToken, public_key } = req.body;
     const email = req.body.email?.trim().toLowerCase();
     
     if (!captchaToken) {
       return res.status(400).json({ message: "Captcha token missing" });
     }
-    if (!username || !usersurname|| !password || !email) {
+    if (!username || !usersurname|| !password || !email || !public_key) {
       return res.status(422).json({ message: "Not enough data" });
     }
     const forbiddenPattern = /[<>]/;
@@ -56,11 +56,11 @@ export const register =  async (req, res) => {
     const hashed = await bcrypt.hash(password, 10);
     const emailToken = crypto.randomUUID();
     const insertQuery = `
-      INSERT INTO users (username, password_hash, email, email_confirm_token, is_verified, usersurname)
-      VALUES ($1,$2,$3,$4,$5,$6)
-      RETURNING id, username, email, email_confirm_token, usersurname;
+      INSERT INTO users (username, password_hash, email, email_confirm_token, is_verified, usersurname, public_key)
+      VALUES ($1,$2,$3,$4,$5,$6,$7)
+      RETURNING id, username, email, email_confirm_token, usersurname, public_key;
     `;
-    const values = [username, hashed, email, emailToken, false, usersurname];
+    const values = [username, hashed, email, emailToken, false, usersurname, public_key];
     const result = await pool.query(insertQuery, values);
     const user = result.rows[0];
     try {
@@ -77,9 +77,9 @@ export const register =  async (req, res) => {
 
 export const login = async (req, res) => {
   try {
-    const { password } = req.body;
+    const { password, public_key } = req.body;
     const email = req.body.email?.trim().toLowerCase();
-    if (!email || !password) {
+    if (!email || !password || !public_key) {
       return res.status(422).json({ message: "Not enough data" });
     }
     const emailRegex = /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i;
@@ -101,6 +101,10 @@ export const login = async (req, res) => {
     if (!isMatch) {
       return res.status(401).json({ message: "Invalid credentials" });
     }
+    await pool.query(
+      "UPDATE users SET public_key = $1 WHERE id = $2",
+      [public_key, user.id]
+    );
     const { accessToken, refreshToken } = generateTokens(user);
     const { password_hash, ...userSafe } = user;
     res.status(200).json({ accessToken, refreshToken, user: userSafe });

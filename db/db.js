@@ -14,7 +14,6 @@ const pool = new Pool({
 async function createTable() {
   const client = await pool.connect();
   try {
-    // users
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -36,7 +35,8 @@ async function createTable() {
         is_online BOOLEAN DEFAULT FALSE,
         last_seen TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
+        updated_at TIMESTAMP DEFAULT NOW(),
+        public_key TEXT
       );
     `);
     await client.query(`
@@ -52,8 +52,18 @@ async function createTable() {
         id SERIAL PRIMARY KEY,
         chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
         user_id INT NOT NULL,
-        UNIQUE(chat_id, user_id)
+        UNIQUE(chat_id, user_id),
+        public_key TEXT
       );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS  messages (
+        id SERIAL PRIMARY KEY,
+        chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
+        sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        content TEXT NOT NULL,  -- зашифрованное сообщение
+        created_at TIMESTAMP DEFAULT NOW()
+    );
     `);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
