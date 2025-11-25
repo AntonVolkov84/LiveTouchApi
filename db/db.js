@@ -61,7 +61,8 @@ async function createTable() {
         id SERIAL PRIMARY KEY,
         chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
         sender_id INT REFERENCES users(id) ON DELETE SET NULL,
-        content TEXT NOT NULL,  -- зашифрованное сообщение
+        ciphertext TEXT NOT NULL,   
+        nonce TEXT NOT NULL,      
         created_at TIMESTAMP DEFAULT NOW()
     );
     `);

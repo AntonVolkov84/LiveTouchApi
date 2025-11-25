@@ -189,4 +189,83 @@ export const leaveChat = async (req, res) => {
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
+export const sendMessage = async (req, res) => {
+  const senderId = req.user.id;
+  const { chat_id, ciphertext, nonce, messages } = req.body;
+
+  try {
+    if (ciphertext && nonce) {
+      const result = await pool.query(
+        `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [chat_id, senderId, ciphertext, nonce]
+      );
+      return res.json(result.rows[0]);
+    }
+    if (Array.isArray(messages)) {
+      const inserted = [];
+
+      for (const msg of messages) {
+        const result = await pool.query(
+          `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
+           VALUES ($1, $2, $3, $4)
+           RETURNING *`,
+          [
+            chat_id,
+            senderId,
+            msg.ciphertext,
+            msg.nonce
+          ]
+        );
+
+        inserted.push(result.rows[0]);
+      }
+      return res.json({ status: "ok", inserted });
+    }
+    return res.status(400).json({ error: "Invalid payload" });
+  } catch (err) {
+    console.error("sendMessage error:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+};
+
+export const getMessages = async (req, res) => {
+  try {
+    const { chat_id } = req.params;
+    if (!chat_id) {
+      return res.status(422).json({ message: "chat_id required" });
+    }
+    const result = await pool.query(
+      `SELECT id, chat_id, sender_id, ciphertext, nonce, created_at
+       FROM messages
+       WHERE chat_id = $1
+       ORDER BY created_at ASC`,
+      [chat_id]
+    );
+    return res.status(200).json(result.rows);
+  } catch (err) {
+    console.error("getMessages error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
+export const getChatParticipants = async (req, res) => {
+  try {
+    const { chat_id } = req.params;
+    if (!chat_id) {
+      return res.status(400).json({ message: "chat_id не указан" });
+    }
+    const result = await pool.query(
+      `SELECT u.id, u.username, u.usersurname, u.public_key
+       FROM chat_participants cp
+       JOIN users u ON cp.user_id = u.id
+       WHERE cp.chat_id = $1`,
+      [chat_id]
+    );
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error("getChatParticipants error:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+};
 
