@@ -36,7 +36,8 @@ async function createTable() {
         last_seen TIMESTAMP,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
-        public_key TEXT
+        public_key TEXT,
+        expo_push_token TEXT
       );
     `);
     await client.query(`

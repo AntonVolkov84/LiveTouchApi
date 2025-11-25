@@ -130,7 +130,8 @@ export const me = async (req, res) => {
       phone: result.rows[0].phone,
       bio: result.rows[0].bio,
       is_verified: result.rows[0].is_verified,
-      created_at: result.rows[0].created_at
+      created_at: result.rows[0].created_at,
+      public_key: result.rows[0].public_key,
     });
   } catch (error) {
     console.error("Error fetching mobile user info:", error);

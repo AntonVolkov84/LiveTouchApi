@@ -194,6 +194,11 @@ export const sendMessage = async (req, res) => {
   const { chat_id, ciphertext, nonce, messages } = req.body;
 
   try {
+    const { rows: participants } = await pool.query(
+      "SELECT user_id FROM chat_participants WHERE chat_id = $1",
+      [chat_id]
+    );
+    // ==== PRIVATE MESSAGE ====
     if (ciphertext && nonce) {
       const result = await pool.query(
         `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
@@ -201,11 +206,28 @@ export const sendMessage = async (req, res) => {
          RETURNING *`,
         [chat_id, senderId, ciphertext, nonce]
       );
+      const payload = {
+        type: "message_new",
+        chat_id,
+        sender_id: senderId,
+        ciphertext,
+        nonce,
+        created_at: new Date().toISOString()
+      };
+
+      participants.forEach(p => {
+        const client = clientsMap.get(p.user_id);
+        if (client && client.readyState === 1) {
+          client.send(JSON.stringify(payload));
+        }
+      });
+
       return res.json(result.rows[0]);
     }
+
+    // ==== GROUP MESSAGE ====
     if (Array.isArray(messages)) {
       const inserted = [];
-
       for (const msg of messages) {
         const result = await pool.query(
           `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
@@ -218,17 +240,34 @@ export const sendMessage = async (req, res) => {
             msg.nonce
           ]
         );
-
         inserted.push(result.rows[0]);
       }
+      const payload = {
+        type: "message_new",
+        chat_id,
+        sender_id: senderId,
+        created_at: new Date().toISOString(),
+        messages,
+        
+      };
+      participants.forEach(p => {
+        const client = clientsMap.get(p.user_id);
+        if (client && client.readyState === 1) {
+          client.send(JSON.stringify(payload));
+        }
+      });
+
       return res.json({ status: "ok", inserted });
     }
+
     return res.status(400).json({ error: "Invalid payload" });
+
   } catch (err) {
     console.error("sendMessage error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
+
 
 export const getMessages = async (req, res) => {
   try {
