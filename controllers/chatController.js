@@ -1,7 +1,39 @@
 import { pool } from "../db/db.js"; 
 import { minioClient } from '../minio.js'
-import { wss } from "../index.js";
 import { clientsMap } from '../index.js'; 
+import fetch from "node-fetch";
+
+
+
+export const sendExpoPush = async (expoToken, title, body, data = {}) => {
+  if (!expoToken) {
+    console.log("Invalid expo token:", expoToken);
+    return;
+  }
+  const message = {
+    to: expoToken,
+    sound: "default",
+    title,
+    body,
+    data,
+     android: {
+    channelId: "default",
+  },
+  };
+  try{
+  const response = await fetch("https://exp.host/--/api/v2/push/send", {
+    method: "POST",
+    headers: {
+      "Accept": "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(message),
+  });
+}catch(error){
+  console.log("sendExpoPush", error)
+}}
+
+
 
 export const createPrivateChat = async (req, res) => {
   try {
@@ -134,8 +166,7 @@ export const createGroupChat = async (req, res) => {
 export const leaveChat = async (req, res) => {
   const userId = req.user.id;
   const chatId = Number(req.params.chatId);
-
-  try {
+    try {
     const check = await pool.query(
       "SELECT * FROM chat_participants WHERE chat_id = $1 AND user_id = $2",
       [chatId, userId]
@@ -160,6 +191,8 @@ export const leaveChat = async (req, res) => {
 
       // Удалить сам чат
       await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
+      console.log(clientsMap)
+      console.log("222")
       const client = clientsMap.get(userId);
         if (client && client.readyState === 1) {
           client.send(JSON.stringify({
@@ -172,6 +205,7 @@ export const leaveChat = async (req, res) => {
         message: "Вы покинули чат. Чат удалён полностью, т.к. участников не осталось."
       });
     }
+    console.log(clientsMap)
     const client = clientsMap.get(userId);
     if (client && client.readyState === 1) {
       const payload = {
@@ -191,13 +225,40 @@ export const leaveChat = async (req, res) => {
 };
 export const sendMessage = async (req, res) => {
   const senderId = req.user.id;
-  const { chat_id, ciphertext, nonce, messages } = req.body;
-
+  const { chat_id, ciphertext, nonce, messages, chatName } = req.body;
+  
   try {
-    const { rows: participants } = await pool.query(
+      const { rows: participants } = await pool.query(
       "SELECT user_id FROM chat_participants WHERE chat_id = $1",
       [chat_id]
     );
+    const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
+    const { rows: userRows } = await pool.query(
+      "SELECT username, usersurname, avatar_url FROM users WHERE id = $1",
+      [senderId]
+    );
+    const sender = userRows[0] || { username: "", usersurname: "", avatar_url: "" };
+    try{
+      const { rows: tokenRows } = await pool.query(
+      `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
+      [participantIds]
+    );
+    const expoTokens = tokenRows
+      .map(u => u.expo_push_token)
+      .filter(t => t && t.startsWith("ExponentPushToken"));
+
+    if (expoTokens.length > 0) {
+      const title = messages
+        ? `${sender.usersurname}`
+        : `${sender.usersurname} ${sender.username}`;
+
+      const body = "Получено новое сообщение";
+      sendExpoPush(expoTokens, title, body, {chat_id,
+              type: "message_new"})
+      }}catch(error){
+      console.log("Push" ,error)
+    }
+
     // ==== PRIVATE MESSAGE ====
     if (ciphertext && nonce) {
       const result = await pool.query(
@@ -206,10 +267,14 @@ export const sendMessage = async (req, res) => {
          RETURNING *`,
         [chat_id, senderId, ciphertext, nonce]
       );
+
       const payload = {
         type: "message_new",
         chat_id,
         sender_id: senderId,
+        sender_name: sender.username,
+        sender_surname: sender.usersurname,
+        avatar_url: sender.avatar_url,
         ciphertext,
         nonce,
         created_at: new Date().toISOString()
@@ -233,23 +298,22 @@ export const sendMessage = async (req, res) => {
           `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
            VALUES ($1, $2, $3, $4)
            RETURNING *`,
-          [
-            chat_id,
-            senderId,
-            msg.ciphertext,
-            msg.nonce
-          ]
+          [chat_id, senderId, msg.ciphertext, msg.nonce]
         );
         inserted.push(result.rows[0]);
       }
+
       const payload = {
         type: "message_new",
         chat_id,
         sender_id: senderId,
+        sender_name: sender.username,
+        sender_surname: sender.usersurname,
+        avatar_url: sender.avatar_url,
         created_at: new Date().toISOString(),
         messages,
-        
       };
+
       participants.forEach(p => {
         const client = clientsMap.get(p.user_id);
         if (client && client.readyState === 1) {
@@ -261,14 +325,11 @@ export const sendMessage = async (req, res) => {
     }
 
     return res.status(400).json({ error: "Invalid payload" });
-
   } catch (err) {
     console.error("sendMessage error:", err);
     res.status(500).json({ error: "Server error" });
   }
 };
-
-
 export const getMessages = async (req, res) => {
   try {
     const { chat_id } = req.params;
@@ -276,10 +337,12 @@ export const getMessages = async (req, res) => {
       return res.status(422).json({ message: "chat_id required" });
     }
     const result = await pool.query(
-      `SELECT id, chat_id, sender_id, ciphertext, nonce, created_at
-       FROM messages
-       WHERE chat_id = $1
-       ORDER BY created_at ASC`,
+      `SELECT m.id, m.chat_id, m.sender_id, m.ciphertext, m.nonce, m.created_at,
+              u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar 
+       FROM messages m
+       JOIN users u ON m.sender_id = u.id
+       WHERE m.chat_id = $1
+       ORDER BY m.created_at ASC`,
       [chat_id]
     );
     return res.status(200).json(result.rows);
