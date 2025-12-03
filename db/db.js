@@ -63,8 +63,18 @@ async function createTable() {
         chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
         sender_id INT REFERENCES users(id) ON DELETE SET NULL,
         ciphertext TEXT NOT NULL,   
-        nonce TEXT NOT NULL,      
-        created_at TIMESTAMP DEFAULT NOW()
+        nonce TEXT NOT NULL, 
+        user_id INT REFERENCES users(id) ON DELETE CASCADE,     
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+    );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS  unread (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        chat_id INTEGER NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        PRIMARY KEY (user_id, chat_id)
     );
     `);
   } catch (error) {

@@ -27,9 +27,9 @@ const generateTokens = (user) => {
 
 export const register =  async (req, res) => {
   try {
+    
     const { username, usersurname, password, captchaToken, public_key } = req.body;
     const email = req.body.email?.trim().toLowerCase();
-    
     if (!captchaToken) {
       return res.status(400).json({ message: "Captcha token missing" });
     }
@@ -41,7 +41,6 @@ export const register =  async (req, res) => {
       return res.status(422).json({ message: "Имя и фамилия содержат недопустимые символы" });
     }
     const captchaResult = await verifyCaptcha(captchaToken, process.env.LIVETOUCH_PROJECT_NUMBER);
-
     if (!captchaResult.success) {
       return res.status(403).json({ message: 'Captcha verification failed' });
     }
