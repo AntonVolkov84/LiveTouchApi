@@ -8,6 +8,7 @@ import * as minioController from './controllers/minioController.js';
 import multer from "multer";
 import authRoutes from "./routes/authRoutes.js";
 import chatsRoutes from "./routes/chatsRoutes.js"
+import errorsRouter from "./routes/errorsRouter.js"
 
 const app = express();
 app.use(cors());
@@ -17,6 +18,7 @@ const upload = multer({ dest: "uploads/" });
 
 app.use("/auth", authRoutes);
 app.use("/chats", chatsRoutes);
+app.use("/errors", errorsRouter);
 
 app.post("/upload", upload.single("file"), minioController.uploadMinIO)
 

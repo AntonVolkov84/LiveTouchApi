@@ -380,6 +380,55 @@ export const getChatParticipants = async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 };
+export const addParticipant = async (req, res) => {
+  try {
+    const { email, chat_id, created_at, groupName, chat_type } = req.body;
+    if (!email || !chat_id) {
+      return res.status(400).json({ error: "email и chat_id обязательны" });
+    }
+    const userRes = await pool.query(
+      "SELECT id FROM users WHERE email = $1",
+      [email]
+    );
+    if (userRes.rowCount === 0) {
+      return res.status(404).json({ error: "Пользователь не найден" });
+    }
+    const newUserId = userRes.rows[0].id;
+    const participantRes = await pool.query(
+      "SELECT user_id FROM chat_participants WHERE chat_id = $1 AND user_id = $2",
+      [chat_id, newUserId]
+    );
+    if (participantRes.rowCount > 0) {
+      return res.status(409).json({ error: "Пользователь уже в чате" });
+    }
+    await pool.query(
+      `INSERT INTO chat_participants (chat_id, user_id)
+       VALUES ($1, $2)`,
+      [chat_id, newUserId]
+    );
+    const payload = {
+        type: "add_participant",
+        chat_id,
+        created_at,
+        name: groupName,
+        chat_type
+      };
+    
+    const ws = clientsMap.get(newUserId);
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify(payload));
+      }
+    return res.status(200).json({
+      status: "ok",
+      user_id: newUserId,
+      chat_id,
+    });
+  } catch (err) {
+    console.error("Ошибка addParticipant:", err);
+    return res.status(500).json({ error: "Внутренняя ошибка сервера" });
+  }
+};
+
 export const getUnread = async (req, res) => {
   const userId = req.user.id;
   try {
