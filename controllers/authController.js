@@ -351,3 +351,19 @@ export const updateProfile = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+export const addExpoPushToken = async (req, res) => {
+    try {
+    const user_id = req.user.id;
+    const { expoToken } = req.body;
+    
+    if (!expoToken) {
+      return res.status(422).json({ message: "Not enough data" });
+    }
+    await pool.query(
+      "UPDATE users SET expo_push_token = $1 WHERE id = $2",
+      [expoToken, user_id]
+    );
+    res.status(200).json({ message: "Expo token updated" });
+  }catch(err){
+    console.log("addExpoPushToken", err)
+  }}

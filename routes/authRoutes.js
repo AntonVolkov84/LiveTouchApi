@@ -8,7 +8,8 @@ import {
   resetPassword,
   confirmEmail,
   updateAvatar,
-  updateProfile
+  updateProfile,
+  addExpoPushToken
   } from "../controllers/authController.js";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
 
@@ -17,6 +18,7 @@ const router = express.Router();
 router.post("/register", register);
 
 router.post("/login", login);
+router.put("/expotoken", authenticateToken, addExpoPushToken);
 
 router.get("/me", authenticateToken, me);
 
