@@ -9,7 +9,8 @@ import {
   confirmEmail,
   updateAvatar,
   updateProfile,
-  addExpoPushToken
+  addExpoPushToken,
+  getProfileInfo
   } from "../controllers/authController.js";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
 
@@ -21,6 +22,8 @@ router.post("/login", login);
 router.put("/expotoken", authenticateToken, addExpoPushToken);
 
 router.get("/me", authenticateToken, me);
+
+router.get("/:id/profile", authenticateToken, getProfileInfo);
 
 router.post("/refresh", refreshAccessToken);
 

@@ -246,7 +246,7 @@ export const sendMessage = async (req, res) => {
       [senderId]
     );
     const sender = userRes.rows[0];
-
+    
     // Берём участников чата
     const partRes = await pool.query(
       "SELECT user_id FROM chat_participants WHERE chat_id = $1",
@@ -277,7 +277,7 @@ export const sendMessage = async (req, res) => {
         sender_id: senderId,
         sender_name: sender.username,
         sender_surname: sender.usersurname,
-        avatar_url: sender.avatar_url,
+        sender_avatar: sender.avatar_url,
         ciphertext,
         nonce,
         created_at: msg.created_at,
@@ -322,7 +322,7 @@ export const sendMessage = async (req, res) => {
       sender_id: senderId,
       sender_name: sender.username,
       sender_surname: sender.usersurname,
-      avatar_url: sender.avatar_url,
+      sender_avatar: sender.avatar_url,
       created_at: new Date().toISOString(),
       messages: insertedRows     
     };

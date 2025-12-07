@@ -369,3 +369,16 @@ export const addExpoPushToken = async (req, res) => {
   }catch(err){
     console.log("addExpoPushToken", err)
   }}
+export const getProfileInfo = async (req, res) => {
+const id = Number(req.params.id);
+try {
+  const q = `SELECT id, username, usersurname, email, phone, bio, avatar_url FROM users WHERE id = $1`;
+  const { rows } = await pool.query(q, [id]);
+  if (!rows[0]) return res.status(404).json({ message: "Not found" });
+  const profile = rows[0];
+  res.status(200).json(profile);
+} catch (err) {
+  console.error(err);
+  res.status(500).json({ message: "Server error" });
+}
+};
