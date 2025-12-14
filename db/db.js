@@ -77,6 +77,15 @@ async function createTable() {
         PRIMARY KEY (user_id, chat_id)
     );
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS chat_files (
+        id SERIAL PRIMARY KEY,         
+        chat_id INT NOT NULL,    
+        file_name VARCHAR(255) NOT NULL,
+        bucket VARCHAR(50) NOT NULL,   
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    `);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {

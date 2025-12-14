@@ -184,15 +184,13 @@ export const leaveChat = async (req, res) => {
     );
     const remainingCount = participants.rowCount;
     if (remainingCount === 0) {
-      // await pool.query("DELETE FROM messages WHERE chat_id = $1", [chatId]);
-
-      // Удалить вложения в MinIO (если используете)
-      // TODO: добавь надёжный удалитель, если храните файлы по chat_id
-
-      // Удалить сам чат
+      const filesRes = await pool.query("SELECT * FROM chat_files WHERE chat_id = $1", [chatId]);
+      const files = filesRes.rows;
+      await Promise.all(
+        files.map(f => minioClient.removeObject(f.bucket, f.file_name))
+      );
+      await pool.query("DELETE FROM chat_files WHERE chat_id = $1", [chatId]);
       await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
-      console.log(clientsMap)
-      console.log("222")
       const client = clientsMap.get(userId);
         if (client && client.readyState === 1) {
           client.send(JSON.stringify({
