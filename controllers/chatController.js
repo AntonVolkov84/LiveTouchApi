@@ -223,34 +223,42 @@ export const leaveChat = async (req, res) => {
 };
 export const sendMessage = async (req, res) => {
   const senderId = req.user.id;
-  const { chat_id, ciphertext, nonce, messages } = req.body;
-
+  const { chat_id, ciphertext, nonce, messages, chatName } = req.body;
   if (!chat_id) return res.status(422).json({ message: "chat_id обязателен" });
-
   try {
-    // Берём чат
     const chatRes = await pool.query(
       "SELECT type FROM chats WHERE id = $1",
       [chat_id]
     );
     if (chatRes.rows.length === 0)
       return res.status(404).json({ message: "Чат не найден" });
-
     const chatType = chatRes.rows[0].type;
-
-    // Берём данные отправителя
     const userRes = await pool.query(
       "SELECT username, usersurname, avatar_url FROM users WHERE id = $1",
       [senderId]
     );
     const sender = userRes.rows[0];
-    
-    // Берём участников чата
-    const partRes = await pool.query(
+    const { rows: participants } = await pool.query(
       "SELECT user_id FROM chat_participants WHERE chat_id = $1",
       [chat_id]
     );
-    const participants = partRes.rows.map((p) => p.user_id);
+    const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
+    const { rows: tokenRows } = await pool.query(
+      `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
+      [participantIds]
+    );
+    const expoTokens = tokenRows
+      .map(u => u.expo_push_token)
+      .filter(t => t && t.startsWith("ExponentPushToken"));
+    if (expoTokens.length > 0) {
+      const title = messages
+        ? `${chatName}`
+        : `${sender.usersurname} ${sender.username}`;
+      const body = "Получено новое сообщение";
+      sendExpoPush(expoTokens, title, body, {chat_id,
+              type: "message_new"})
+      }
+    
 
     // ============================================================
     //                     PRIVATE CHAT
@@ -280,10 +288,8 @@ export const sendMessage = async (req, res) => {
         nonce,
         created_at: msg.created_at,
       };
-
-      // Рассылка
-      participants.forEach((uid) => {
-        const ws = clientsMap.get(uid);
+      participants.forEach(({ user_id }) => {
+        const ws = clientsMap.get(user_id);
         if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
       });
 
@@ -325,8 +331,8 @@ export const sendMessage = async (req, res) => {
       messages: insertedRows     
     };
 
-    participants.forEach((uid) => {
-      const ws = clientsMap.get(uid);
+    participants.forEach(({ user_id }) => {
+      const ws = clientsMap.get(user_id);
       if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
     });
 
