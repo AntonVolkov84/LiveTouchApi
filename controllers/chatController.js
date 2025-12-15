@@ -276,6 +276,16 @@ export const sendMessage = async (req, res) => {
 
       const msg = insertRes.rows[0];
 
+      const otherParticipant = participants.find(p => p.user_id !== senderId);
+      if (otherParticipant) {
+        await pool.query(
+          `INSERT INTO unread(user_id, chat_id)
+          VALUES ($1, $2)
+          ON CONFLICT DO NOTHING`,
+          [otherParticipant.user_id, chat_id]
+        );
+      }
+
       const payload = {
         type: "message_new",
         chat_id,
@@ -318,6 +328,19 @@ export const sendMessage = async (req, res) => {
         ciphertext: row.ciphertext,
         nonce: row.nonce
       });
+    }
+
+    const otherParticipantIds = participants
+  .map(p => p.user_id)
+  .filter(id => id !== senderId);
+
+    if (otherParticipantIds.length > 0) {
+      const values = otherParticipantIds.map(id => `(${id}, ${chat_id})`).join(",");
+      await pool.query(
+        `INSERT INTO unread(user_id, chat_id)
+        VALUES ${values}
+        ON CONFLICT DO NOTHING`
+      );
     }
 
     const payload = {
