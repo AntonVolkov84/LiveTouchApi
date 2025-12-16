@@ -10,7 +10,8 @@ import {
   updateAvatar,
   updateProfile,
   addExpoPushToken,
-  getProfileInfo
+  getProfileInfo,
+  checkUserByEmail
   } from "../controllers/authController.js";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
 
@@ -36,6 +37,8 @@ router.get("/reset-password", resetPassword);
 router.put("/update-avatar", authenticateToken,updateAvatar);
 
 router.put("/update-profile", authenticateToken, updateProfile);
+
+router.get("/check", authenticateToken, checkUserByEmail);
 
 
 export default router;

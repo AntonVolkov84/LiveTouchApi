@@ -243,6 +243,7 @@ export const sendMessage = async (req, res) => {
       [chat_id]
     );
     const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
+    console.log(chatName || "private", participants, "filtered:", participantIds)
     const { rows: tokenRows } = await pool.query(
       `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
       [participantIds]

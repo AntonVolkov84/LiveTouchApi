@@ -382,3 +382,17 @@ try {
   res.status(500).json({ message: "Server error" });
 }
 };
+export const checkUserByEmail = async (req, res) => {
+  const { email } = req.query; 
+  if (!email) {
+    return res.status(400).json({ exists: false, message: "Email required" });
+  }
+  try {
+    const q = `SELECT 1 FROM users WHERE email = $1 LIMIT 1`;
+    const { rows } = await pool.query(q, [email]);
+    return res.status(200).json({ exists: rows.length > 0 });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ exists: false, message: "Server error" });
+  }
+};
