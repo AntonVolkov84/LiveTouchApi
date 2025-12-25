@@ -30,6 +30,7 @@ app.post("/miniodata", minioController.addChatFile)
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
+const pendingCalls = new Map<number, PendingCall>();
 export const clientsMap = new Map();
 wss.on("connection", (ws) => {
  ws.on("message", async(message) => {
@@ -37,6 +38,10 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(message.toString());
       const targetWs = clientsMap.get(data.target);
       switch(data.type) {
+      case "init":
+        clientsMap.set(data.userId, ws);
+        console.log("Registered userId:", data.userId);
+        break;
       case "offer":
           const { rows: tokenRows } = await pool.query(
           `SELECT expo_push_token FROM users WHERE id = $1`,
@@ -58,12 +63,24 @@ wss.on("connection", (ws) => {
             { callerId: data.sender, chatId: data.chatId, callerName }
           );
         }
+        try {
           targetWs?.send(JSON.stringify({
             ...data,
             sender: data.sender || null
           }));
+        } catch(e) {
+          console.error("Error sending WS message", e);
+        }
+          
           break;
       case "answer":
+        targetWs?.send(JSON.stringify({
+          ...data,
+          sender: data.sender || null
+        }));
+        break;
+      case "call-ended":
+        console.log("call-ended",data)
         targetWs?.send(JSON.stringify({
           ...data,
           sender: data.sender || null
@@ -74,11 +91,9 @@ wss.on("connection", (ws) => {
           ...data,
           sender: data.sender || null
         }));
+        console.log("Message forwarded ICE-CANDIDATE:", data.type, "отправитель: ",data.sender);
         break;
-      case "init":
-        clientsMap.set(data.userId, ws);
-        console.log("Registered userId:", data.userId);
-        break;
+      
       default:
         console.warn("Unknown WS type:", data.type);
     }
