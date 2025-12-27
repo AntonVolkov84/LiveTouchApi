@@ -5,33 +5,42 @@ import fetch from "node-fetch";
 
 
 
-export const sendExpoPush = async (expoToken, title, body, data = {}) => {
-  if (!expoToken) {
-    console.log("Invalid expo token:", expoToken);
-    return;
-  }
-  const message = {
-    to: expoToken,
-    sound: "default",
-    title,
-    body,
-    data,
-     android: {
-    channelId: "default",
+export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default") => {
+  if (!expoToken) return;
+
+ const message = {
+  to: expoToken,
+  title: title,
+  body: body,
+  data: data,
+  sound: "default", 
+  priority: "high",
+  channelId: channel,
+  android: {
+    channelId: channel,
+    priority: "high",
   },
-  };
-  try{
-  const response = await fetch("https://exp.host/--/api/v2/push/send", {
-    method: "POST",
-    headers: {
-      "Accept": "application/json",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(message),
-  });
-}catch(error){
-  console.log("sendExpoPush", error)
-}}
+  notification: {
+      channelId: channel,
+    }
+};
+  console.log("SENDING PUSH WITH CHANNEL:", message.android.channelId);
+  try {
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(message),
+    });
+    const res = await response.json();
+    console.log("Expo Response:", JSON.stringify(res));
+  } catch (error) {
+    console.error("Push Error:", error);
+  }
+}
 
 
 

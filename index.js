@@ -30,7 +30,7 @@ app.post("/miniodata", minioController.addChatFile)
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
-const pendingCalls = new Map<number, PendingCall>();
+const pendingCalls = new Map();
 export const clientsMap = new Map();
 wss.on("connection", (ws) => {
  ws.on("message", async(message) => {
@@ -38,11 +38,30 @@ wss.on("connection", (ws) => {
       const data = JSON.parse(message.toString());
       const targetWs = clientsMap.get(data.target);
       switch(data.type) {
-      case "init":
-        clientsMap.set(data.userId, ws);
-        console.log("Registered userId:", data.userId);
-        break;
+      case "init": {
+      clientsMap.set(data.userId, ws);
+      break;
+    }
+      case "pending-ready": {
+      const pending = pendingCalls.get(data.sender);
+      if (pending) {
+        if (pending.offer) {
+          ws.send(JSON.stringify(pending.offer));
+        }
+        for (const ice of pending.ice) {
+          ws.send(JSON.stringify(ice));
+        }
+        pendingCalls.delete(data.sender);
+      }
+      break;
+    }
       case "offer":
+        if (!targetWs) {
+            pendingCalls.set(data.target, {
+              offer: data,
+              ice: []
+            });
+          }
           const { rows: tokenRows } = await pool.query(
           `SELECT expo_push_token FROM users WHERE id = $1`,
           [data.target] 
@@ -60,7 +79,8 @@ wss.on("connection", (ws) => {
             expoToken,
             "Входящий звонок",
             `Звонок от ${callerName}`,
-            { callerId: data.sender, chatId: data.chatId, callerName }
+            { callerId: data.sender, chatId: data.chatId, callerName },
+            "calls-fixed-v1"
           );
         }
         try {
@@ -80,18 +100,24 @@ wss.on("connection", (ws) => {
         }));
         break;
       case "call-ended":
-        console.log("call-ended",data)
+        pendingCalls.delete(data.target);
+        pendingCalls.delete(data.sender);
         targetWs?.send(JSON.stringify({
           ...data,
           sender: data.sender || null
         }));
         break;
       case "ice-candidate":
+        if (!targetWs) {
+          const pending = pendingCalls.get(data.target);
+          if (pending) {
+            pending.ice.push(data);
+          }
+        }
         targetWs?.send(JSON.stringify({
           ...data,
           sender: data.sender || null
         }));
-        console.log("Message forwarded ICE-CANDIDATE:", data.type, "отправитель: ",data.sender);
         break;
       
       default:
