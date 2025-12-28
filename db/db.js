@@ -62,9 +62,10 @@ async function createTable() {
         id SERIAL PRIMARY KEY,
         chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
         sender_id INT REFERENCES users(id) ON DELETE SET NULL,
+        recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
         ciphertext TEXT NOT NULL,   
         nonce TEXT NOT NULL, 
-        user_id INT REFERENCES users(id) ON DELETE CASCADE,     
+        parent_id INT REFERENCES messages(id) ON DELETE CASCADE,   
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
     );

@@ -24,23 +24,7 @@ export const sendExpoPush = async (expoToken, title, body, data = {}, channel = 
       channelId: channel,
     }
 };
-  console.log("SENDING PUSH WITH CHANNEL:", message.android.channelId);
-  try {
-    const response = await fetch("https://exp.host/--/api/v2/push/send", {
-      method: "POST",
-      headers: {
-        "Accept": "application/json",
-        "Accept-encoding": "gzip, deflate",
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(message),
-    });
-    const res = await response.json();
-    console.log("Expo Response:", JSON.stringify(res));
-  } catch (error) {
-    console.error("Push Error:", error);
   }
-}
 
 
 
@@ -252,7 +236,6 @@ export const sendMessage = async (req, res) => {
       [chat_id]
     );
     const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
-    console.log(chatName || "private", participants, "filtered:", participantIds)
     const { rows: tokenRows } = await pool.query(
       `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
       [participantIds]
@@ -276,15 +259,21 @@ export const sendMessage = async (req, res) => {
     if (chatType === "private") {
       if (!ciphertext || !nonce)
         return res.status(422).json({ message: "ciphertext и nonce обязательны" });
-
+      const recipientId = participantIds[0] || senderId;
       const insertRes = await pool.query(
-        `INSERT INTO messages (chat_id, sender_id, ciphertext, nonce)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce)
+         VALUES ($1, $2, $3, $4, $5)
          RETURNING *`,
-        [chat_id, senderId, ciphertext, nonce]
+        [chat_id, senderId, recipientId, ciphertext, nonce]
       );
 
-      const msg = insertRes.rows[0];
+      let msg = insertRes.rows[0];
+
+      const updateRes = await pool.query(
+        `UPDATE messages SET parent_id = $1 WHERE id = $1 RETURNING *`,
+        [msg.id]
+      );
+      msg = updateRes.rows[0];
 
       const otherParticipant = participants.find(p => p.user_id !== senderId);
       if (otherParticipant) {
@@ -303,6 +292,7 @@ export const sendMessage = async (req, res) => {
         sender_id: senderId,
         sender_name: sender.username,
         sender_surname: sender.usersurname,
+        parent_id: msg.id,
         sender_avatar: sender.avatar_url,
         ciphertext,
         nonce,
@@ -322,18 +312,26 @@ export const sendMessage = async (req, res) => {
     if (!Array.isArray(messages)) {
       return res.status(422).json({ message: "messages обязателен для группы" });
     }
-
+    let parentId = null;
     const insertedRows = [];
     for (const msg of messages) {
-      const ins = await pool.query(
-        `INSERT INTO messages (chat_id, sender_id, user_id, ciphertext, nonce)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *`,
-        [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce] 
-      );
-      const row = ins.rows[0];
+      const insertRes = await pool.query(
+          `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, parent_id)
+           VALUES ($1, $2, $3, $4, $5, $6)
+           RETURNING *`,
+          [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce, parentId])
+      let row = insertRes.rows[0];
+      if (!parentId) {
+          parentId = row.id;
+          const updateRes = await pool.query(
+            `UPDATE messages SET parent_id = $1 WHERE id = $1 RETURNING *`,
+            [parentId]
+          );
+          row = updateRes.rows[0]
+        }
       insertedRows.push({
         id: row.id,
+        parent_id: row.parent_id,
         user_id: msg.user_id,       
         ciphertext: row.ciphertext,
         nonce: row.nonce
@@ -360,7 +358,7 @@ export const sendMessage = async (req, res) => {
       sender_name: sender.username,
       sender_surname: sender.usersurname,
       sender_avatar: sender.avatar_url,
-      created_at: new Date().toISOString(),
+      created_at: insertedRows[0]?.created_at || new Date().toISOString(),
       messages: insertedRows     
     };
 
@@ -380,17 +378,18 @@ export const sendMessage = async (req, res) => {
 export const getMessages = async (req, res) => {
   try {
     const { chat_id } = req.params;
+    const userId = req.user.id;
     if (!chat_id) {
       return res.status(422).json({ message: "chat_id required" });
     }
     const result = await pool.query(
-      `SELECT m.id, m.user_id, m.chat_id, m.sender_id, m.ciphertext, m.nonce, m.created_at,
-              u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar 
+      `SELECT m.id, m.recipient_id, m.chat_id, m.sender_id, m.parent_id, m.ciphertext, m.nonce, m.created_at,
+              u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar, u.public_key AS sender_public_key 
        FROM messages m
        JOIN users u ON m.sender_id = u.id
-       WHERE m.chat_id = $1
+       WHERE m.chat_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
        ORDER BY m.created_at ASC`,
-      [chat_id]
+      [chat_id, userId]
     );
     return res.status(200).json(result.rows);
   } catch (err) {
@@ -516,7 +515,7 @@ export const deleteMessage = async (req, res) => {
   const messageId = Number(req.params.messageId);
   try {
     const { rows } = await pool.query(
-      "SELECT chat_id, sender_id FROM messages WHERE id = $1",
+      "SELECT chat_id, sender_id, parent_id FROM messages WHERE id = $1",
       [messageId]
     );
     if (rows.length === 0) {
@@ -526,7 +525,11 @@ export const deleteMessage = async (req, res) => {
     if (message.sender_id !== userId) {
       return res.status(403).json({ message: "Нет прав на удаление сообщения" });
     }
-    await pool.query("DELETE FROM messages WHERE id = $1", [messageId]);
+    const targetId = message.parent_id || messageId;
+    await pool.query(
+      "DELETE FROM messages WHERE id = $1 OR parent_id = $1", 
+      [targetId]
+    );
     const { rows: participants } = await pool.query(
       "SELECT user_id FROM chat_participants WHERE chat_id = $1",
       [message.chat_id]
@@ -534,7 +537,7 @@ export const deleteMessage = async (req, res) => {
     const payload = {
       type: "message_deleted",
       chat_id: message.chat_id,
-      message_id: messageId,
+      message_id: targetId, 
     };
     participants.forEach(p => {
       const client = clientsMap.get(p.user_id);
@@ -557,7 +560,7 @@ export const updateMessage = async (req, res) => {
   }
   try {
     const { rows } = await pool.query(
-      `SELECT m.chat_id, m.sender_id, c.type 
+      `SELECT m.chat_id, m.sender_id, m.parent_id, c.type 
        FROM messages m 
        JOIN chats c ON m.chat_id = c.id 
        WHERE m.id = $1`,
@@ -567,12 +570,14 @@ export const updateMessage = async (req, res) => {
       return res.status(404).json({ message: "Сообщение не найдено" });
     }
     const message = rows[0];
+    const rootId = message.parent_id || message.id;
+    console.log(`>>> РЕДАКТИРОВАНИЕ. MessageId: ${messageId}, RootId: ${rootId}`);
     if (message.sender_id !== userId) {
       return res.status(403).json({ message: "Нет прав на редактирование сообщения" });
     }
     // ==== Данные отправителя ====
     const { rows: senderRows } = await pool.query(
-      "SELECT username, usersurname, avatar_url FROM users WHERE id = $1",
+      "SELECT username, usersurname, avatar_url, public_key FROM users WHERE id = $1",
       [userId]
     );
     const sender = senderRows[0];
@@ -600,7 +605,8 @@ export const updateMessage = async (req, res) => {
           ...updated,
           sender_name: sender.username,
           sender_surname: sender.usersurname,
-          sender_avatar: sender.avatar_url
+          sender_avatar: sender.avatar_url,
+          sender_public_key: sender.public_key
         }
       };
       participants.forEach(p => {
@@ -615,25 +621,32 @@ export const updateMessage = async (req, res) => {
     // ===================================================================
     if (message.type === "group" && Array.isArray(messages)) {
       const updatedMessages = [];
-
+      console.log(`>>> НАЧАЛО ОБНОВЛЕНИЯ ГРУППЫ. Всего копий от фронта: ${messages.length}`);
+      console.log(`>>> Ищем записи, связанные с ID: ${messageId}`);
       for (const msg of messages) {
+        console.log(`--- Обновление копии для recipient_id: ${msg.recipient_id} ---`);
         const { rows: updatedRows } = await pool.query(
           `UPDATE messages
-           SET ciphertext = $1, nonce = $2
-           WHERE id = $3
-           RETURNING *`,
-          [msg.ciphertext, msg.nonce, msg.id]
+          SET ciphertext = $1, nonce = $2
+          WHERE (id = $3 OR parent_id = $3) AND recipient_id = $4
+          RETURNING *`,
+          [msg.ciphertext, msg.nonce, rootId, msg.recipient_id] 
         );
-
         const updated = updatedRows[0];
-
-        updatedMessages.push({
+        if (updated) {
+          console.log(`✅ Успешно обновлено: id=${updated.id}, parent_id=${updated.parent_id}`);
+          updatedMessages.push({
           ...updated,
-          user_id: msg.user_id,        
+          user_id: msg.recipient_id,
+          sender_id: userId,        
           sender_name: sender.username,
           sender_surname: sender.usersurname,
-          sender_avatar: sender.avatar_url
+          sender_avatar: sender.avatar_url,
+          sender_public_key: sender.public_key
         });
+      } else {
+        console.warn(`❌ Строка НЕ НАЙДЕНА в базе для recipient_id: ${msg.recipient_id}`);
+      }
       }
 
       const payload = {
