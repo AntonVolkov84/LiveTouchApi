@@ -1,9 +1,6 @@
 import { pool } from "../db/db.js"; 
 import { minioClient } from '../minio.js'
 import { clientsMap } from '../index.js'; 
-import fetch from "node-fetch";
-
-
 
 export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default") => {
   if (!expoToken) return;
@@ -24,10 +21,22 @@ export const sendExpoPush = async (expoToken, title, body, data = {}, channel = 
       channelId: channel,
     }
 };
+try {
+    const response = await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: {
+        "Accept": "application/json",
+        "Accept-encoding": "gzip, deflate",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(message),
+    });
+    const resData = await response.json();
+    console.log("Expo Push Response:", JSON.stringify(resData));
+  } catch (error) {
+    console.error("Error sending Expo push:", error);
   }
-
-
-
+  }
 export const createPrivateChat = async (req, res) => {
   try {
     const userId = req.user.id;  
@@ -404,7 +413,7 @@ export const getChatParticipants = async (req, res) => {
       return res.status(400).json({ message: "chat_id не указан" });
     }
     const result = await pool.query(
-      `SELECT u.id, u.username, u.usersurname, u.public_key
+      `SELECT u.id, u.username, u.usersurname, u.public_key, u.avatar_url
        FROM chat_participants cp
        JOIN users u ON cp.user_id = u.id
        WHERE cp.chat_id = $1`,
