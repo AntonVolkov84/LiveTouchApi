@@ -11,7 +11,10 @@ import {
   updateProfile,
   addExpoPushToken,
   getProfileInfo,
-  checkUserByEmail
+  checkUserByEmail,
+  initQrSession,
+  checkQrStatus,
+  completeQrAuth
   } from "../controllers/authController.js";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
 
@@ -40,5 +43,10 @@ router.put("/update-profile", authenticateToken, updateProfile);
 
 router.get("/check", authenticateToken, checkUserByEmail);
 
+router.post("/qr-session", initQrSession);
+
+router.get("/qr-check/:sessionId", checkQrStatus);
+
+router.post("/qr-complete", authenticateToken, completeQrAuth);
 
 export default router;

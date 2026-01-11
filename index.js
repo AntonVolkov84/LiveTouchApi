@@ -13,7 +13,24 @@ import {sendExpoPush} from './controllers/chatController.js'
 import { pool} from './db/db.js';
 
 const app = express();
-app.use(cors());
+
+const allowedOrigins = [
+  'https://livetouch.chat',
+  'https://www.livetouch.chat',
+  'http://localhost:5173' 
+];
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true 
+}));
+
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ limit: "20mb", extended: true }));
 
@@ -39,7 +56,11 @@ wss.on("connection", (ws) => {
       const targetWs = clientsMap.get(data.target);
       switch(data.type) {
       case "init": {
-      clientsMap.set(data.userId, ws);
+      if (!clientsMap.has(data.userId)) {
+        clientsMap.set(data.userId, new Set());
+      }
+        clientsMap.get(data.userId).add(ws);
+        console.log(`User ${data.userId} connected. Total devices: ${clientsMap.get(data.userId).size}`);
       break;
     }
       case "pending-ready": {
@@ -55,10 +76,11 @@ wss.on("connection", (ws) => {
       }
       break;
     }
-      case "offer":
+      case "offer": {
+        const timestamp = Date.now();
         if (!targetWs) {
             pendingCalls.set(data.target, {
-              offer: data,
+              offer: { ...data, timestamp },
               ice: []
             });
           }
@@ -93,20 +115,27 @@ wss.on("connection", (ws) => {
         }
           
           break;
+      }
       case "answer":
         targetWs?.send(JSON.stringify({
           ...data,
           sender: data.sender || null
         }));
         break;
-      case "call-ended":
+      case "call-ended": {
         pendingCalls.delete(data.target);
         pendingCalls.delete(data.sender);
+        const senderWs = clientsMap.get(data.sender);
         targetWs?.send(JSON.stringify({
           ...data,
           sender: data.sender || null
         }));
+        senderWs?.send(JSON.stringify({
+          ...data,
+          sender: data.sender || null
+        }));
         break;
+      }
       case "ice-candidate":
         if (!targetWs) {
           const pending = pendingCalls.get(data.target);
@@ -128,10 +157,14 @@ wss.on("connection", (ws) => {
     }
   });
   ws.on("close", (code, reason) => {
-    console.log("WS CLOSED", { code, reason: reason?.toString() });
-    for (const [userId, client] of clientsMap.entries()) {
-      if (client === ws) {
-        clientsMap.delete(userId);
+    for (const [userId, sockets] of clientsMap.entries()) {
+      if (sockets.has(ws)) {
+        sockets.delete(ws);
+        if (sockets.size === 0) {
+          clientsMap.delete(userId);
+        }
+        console.log(`Device disconnected for user ${userId}. Remaining: ${sockets.size || 0}`);
+        break;
       }
     }
   });

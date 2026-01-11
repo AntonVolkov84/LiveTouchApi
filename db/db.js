@@ -87,6 +87,21 @@ async function createTable() {
         created_at TIMESTAMP DEFAULT NOW()
     );
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS qr_sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(), 
+        temp_public_key TEXT NOT NULL,                
+        status VARCHAR(20) DEFAULT 'pending',         
+        encrypted_data TEXT,                          
+        nonce TEXT,                                   
+        sender_pub_key TEXT,                          
+        user_id INTEGER REFERENCES users(id),         
+        access_token TEXT,                            
+        refresh_token TEXT,                           
+        created_at TIMESTAMP DEFAULT NOW(),
+        expires_at TIMESTAMP DEFAULT (NOW() + INTERVAL '5 minutes') 
+      );
+    `);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {

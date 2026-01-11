@@ -30,6 +30,7 @@ export const register =  async (req, res) => {
     const { username, usersurname, password, captchaToken, public_key } = req.body;
     const manufacturer = req.body.manufacturer?.toLowerCase();
     const email = req.body.email?.trim().toLowerCase();
+    
     if (!captchaToken) {
       return res.status(400).json({ message: "Captcha token missing" });
     }
@@ -42,7 +43,8 @@ export const register =  async (req, res) => {
     }
     let captchaResult = { success: true };
    if (manufacturer !== "huawei") {
-      captchaResult = await verifyCaptcha(captchaToken, process.env.LIVETOUCH_PROJECT_NUMBER);
+      captchaResult = await verifyCaptcha(captchaToken, process.env.LIVETOUCH_PROJECT_NUMBER, manufacturer);
+      console.log(captchaResult)
       if (!captchaResult.success) {
         return res.status(403).json({ message: "Captcha verification failed" });
       }
@@ -394,5 +396,77 @@ export const checkUserByEmail = async (req, res) => {
   } catch (err) {
     console.error(err);
     return res.status(500).json({ exists: false, message: "Server error" });
+  }
+};
+export const initQrSession = async (req, res) => {
+  const { publicKey } = req.body; 
+  try {
+    const result = await pool.query(
+      "INSERT INTO qr_sessions (temp_public_key) VALUES ($1) RETURNING id",
+      [publicKey]
+    );
+    const sessionId = result.rows[0].id;
+    res.json({ 
+      sessionId, 
+      qrString: `lt:qr:${sessionId}:${publicKey}` 
+    });
+  } catch (err) {
+    console.error("QR Init error:", err);
+    res.status(500).json({ message: "Ошибка инициации QR" });
+  }
+};
+export const checkQrStatus = async (req, res) => {
+  const { sessionId } = req.params;
+  try {
+    const result = await pool.query(
+      "SELECT * FROM qr_sessions WHERE id = $1",
+      [sessionId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ message: "Сессия не найдена" });
+    const session = result.rows[0];
+    if (new Date() > new Date(session.expires_at)) {
+      return res.status(410).json({ message: "Сессия истекла" });
+    }
+    if (session.status === 'completed') {
+      const userRes = await pool.query("SELECT id, username, usersurname, email, avatar_url FROM users WHERE id = $1", [session.user_id]);
+      return res.json({
+        status: 'completed',
+        encryptedData: session.encrypted_data,
+        nonce: session.nonce,
+        senderPubKey: session.sender_pub_key,
+        accessToken: session.access_token,
+        refreshToken: session.refresh_token,
+        user: userRes.rows[0]
+      });
+    }
+    res.json({ status: 'pending' });
+  } catch (err) {
+    res.status(500).json({ message: "Ошибка проверки статуса" });
+  }
+};
+export const completeQrAuth = async (req, res) => {
+  const { sessionId, encryptedData, nonce, senderPubKey } = req.body;
+  const userId = req.user.id; 
+  try {
+    const userResult = await pool.query("SELECT * FROM users WHERE id = $1", [userId]);
+    const user = userResult.rows[0];
+    if (!user) return res.status(404).json({ message: "Пользователь не найден" });
+    const { accessToken, refreshToken } = generateTokens(user);
+    await pool.query(
+      `UPDATE qr_sessions 
+       SET status = 'completed', 
+           encrypted_data = $1, 
+           nonce = $2, 
+           sender_pub_key = $3, 
+           user_id = $4,
+           access_token = $5,
+           refresh_token = $6
+       WHERE id = $7`,
+      [encryptedData, nonce, senderPubKey, userId, accessToken, refreshToken, sessionId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error("QR Complete error:", err);
+    res.status(500).json({ message: "Ошибка завершения авторизации" });
   }
 };

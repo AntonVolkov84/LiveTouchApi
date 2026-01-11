@@ -4,7 +4,6 @@ import { clientsMap } from '../index.js';
 
 export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default") => {
   if (!expoToken) return;
-
  const message = {
   to: expoToken,
   title: title,
@@ -308,8 +307,12 @@ export const sendMessage = async (req, res) => {
         created_at: msg.created_at,
       };
       participants.forEach(({ user_id }) => {
-        const ws = clientsMap.get(user_id);
-        if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
+        const sockets = clientsMap.get(user_id);
+        if (sockets) {
+          sockets.forEach(s => {
+            if (s.readyState === 1) s.send(JSON.stringify(payload));
+          });
+        }
       });
 
       return res.status(200).json(msg);
@@ -372,8 +375,12 @@ export const sendMessage = async (req, res) => {
     };
 
     participants.forEach(({ user_id }) => {
-      const ws = clientsMap.get(user_id);
-      if (ws && ws.readyState === 1) ws.send(JSON.stringify(payload));
+      const sockets = clientsMap.get(user_id);
+      if (sockets) {
+        sockets.forEach(s => {
+          if (s.readyState === 1) s.send(JSON.stringify(payload));
+        });
+      }
     });
 
     return res.status(200).json({ status: "ok", inserted: insertedRows });
@@ -522,6 +529,7 @@ export const clearAllUnread = async (req, res) => {
 export const deleteMessage = async (req, res) => {
   const userId = req.user.id;
   const messageId = Number(req.params.messageId);
+  console.log(userId, messageId)
   try {
     const { rows } = await pool.query(
       "SELECT chat_id, sender_id, parent_id FROM messages WHERE id = $1",
@@ -549,9 +557,11 @@ export const deleteMessage = async (req, res) => {
       message_id: targetId, 
     };
     participants.forEach(p => {
-      const client = clientsMap.get(p.user_id);
-      if (client && client.readyState === 1) {
-        client.send(JSON.stringify(payload));
+      const sockets = clientsMap.get(p.user_id);
+      if (sockets) {
+        sockets.forEach(s => {
+          if (s.readyState === 1) s.send(JSON.stringify(payload));
+        });
       }
     });
     res.status(200).json({ message: "Сообщение удалено" });
@@ -580,7 +590,6 @@ export const updateMessage = async (req, res) => {
     }
     const message = rows[0];
     const rootId = message.parent_id || message.id;
-    console.log(`>>> РЕДАКТИРОВАНИЕ. MessageId: ${messageId}, RootId: ${rootId}`);
     if (message.sender_id !== userId) {
       return res.status(403).json({ message: "Нет прав на редактирование сообщения" });
     }
@@ -619,9 +628,15 @@ export const updateMessage = async (req, res) => {
         }
       };
       participants.forEach(p => {
-        const client = clientsMap.get(p.user_id);
-        if (client && client.readyState === 1) client.send(JSON.stringify(payload));
-      });
+      const sockets = clientsMap.get(p.user_id); 
+      if (sockets && sockets.size > 0) {
+        sockets.forEach(s => {
+          if (s.readyState === 1) {
+            s.send(JSON.stringify(payload));
+          }
+        });
+      }
+    });
       return res.status(200).json(updated);
     }
 
@@ -630,10 +645,7 @@ export const updateMessage = async (req, res) => {
     // ===================================================================
     if (message.type === "group" && Array.isArray(messages)) {
       const updatedMessages = [];
-      console.log(`>>> НАЧАЛО ОБНОВЛЕНИЯ ГРУППЫ. Всего копий от фронта: ${messages.length}`);
-      console.log(`>>> Ищем записи, связанные с ID: ${messageId}`);
-      for (const msg of messages) {
-        console.log(`--- Обновление копии для recipient_id: ${msg.recipient_id} ---`);
+        for (const msg of messages) {
         const { rows: updatedRows } = await pool.query(
           `UPDATE messages
           SET ciphertext = $1, nonce = $2
@@ -657,23 +669,24 @@ export const updateMessage = async (req, res) => {
         console.warn(`❌ Строка НЕ НАЙДЕНА в базе для recipient_id: ${msg.recipient_id}`);
       }
       }
-
       const payload = {
         type: "message_updated",
         chat_id: message.chat_id,
         messages: updatedMessages
       };
-
       participants.forEach(p => {
-        const client = clientsMap.get(p.user_id);
-        if (client && client.readyState === 1) client.send(JSON.stringify(payload));
-      });
-
+      const sockets = clientsMap.get(p.user_id); 
+      if (sockets && sockets.size > 0) {
+        sockets.forEach(s => {
+          if (s.readyState === 1) {
+            s.send(JSON.stringify(payload));
+          }
+        });
+      }
+    });
       return res.status(200).json({ status: "ok", updated: updatedMessages });
     }
-
     return res.status(400).json({ message: "Невозможно обновить сообщение" });
-
   } catch (err) {
     console.error("updateMessage error:", err);
     return res.status(500).json({ message: "Ошибка сервера" });

@@ -4,13 +4,16 @@ const client = new RecaptchaEnterpriseServiceClient({
   keyFilename: './recaptcha-service-account.json', 
 });
 
-export const verifyCaptcha = async (token, projectId) => {
+export const verifyCaptcha = async (token, projectId, platform) => {
+  const siteKey = platform === 'browser' 
+    ? process.env.RECAPTCHA_SITE_KEY_WEB    
+    : process.env.RECAPTCHA_SITE_KEY_ANDROID;
       const request = {
     parent: `projects/${projectId}`,
     assessment: {
       event: {
         token,
-        siteKey: process.env.RECAPTCHA_SITE_KEY_ANDROID, 
+        siteKey: siteKey, 
         expectedAction: 'register', 
       },
     },
