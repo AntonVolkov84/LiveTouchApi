@@ -31,7 +31,6 @@ try {
       body: JSON.stringify(message),
     });
     const resData = await response.json();
-    console.log("Expo Push Response:", JSON.stringify(resData));
   } catch (error) {
     console.error("Error sending Expo push:", error);
   }
@@ -75,9 +74,13 @@ export const createPrivateChat = async (req, res) => {
     };
 
     [userId, otherUserId].forEach(id => {
-      const client = clientsMap.get(id);
-      if (client && client.readyState === 1) {
-        client.send(JSON.stringify(payload));
+      const userSockets = clientsMap.get(id); 
+      if (userSockets instanceof Set) {
+        userSockets.forEach(socket => {
+          if (socket.readyState === 1) {
+            socket.send(JSON.stringify(payload));
+          }
+        });
       }
     });
     res.status(201).json({ chatId, message: "Приватный чат создан" });
@@ -153,9 +156,13 @@ export const createGroupChat = async (req, res) => {
       created_at: new Date().toISOString(),
     };
     uniqueParticipants.forEach(uid => {
-      const client = clientsMap.get(uid);
-      if (client && client.readyState === 1) {
-        client.send(JSON.stringify(payload));
+      const userSockets = clientsMap.get(uid);
+      if (userSockets instanceof Set) {
+        userSockets.forEach(socket => {
+          if (socket.readyState === 1) {
+            socket.send(JSON.stringify(payload));
+          }
+        });
       }
     });
     res.status(201).json({ chat_id: chatId, message: "Групповой чат создан" });
@@ -192,27 +199,33 @@ export const leaveChat = async (req, res) => {
       );
       await pool.query("DELETE FROM chat_files WHERE chat_id = $1", [chatId]);
       await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
-      const client = clientsMap.get(userId);
-        if (client && client.readyState === 1) {
-          client.send(JSON.stringify({
-            type: "chat_removed",
-            chat_id: chatId
-          }));
-        }
-
+      const userSockets = clientsMap.get(userId);
+      if (userSockets instanceof Set) {
+        userSockets.forEach(socket => {
+          if (socket.readyState === 1) {
+            socket.send(JSON.stringify({
+              type: "chat_removed",
+              chat_id: chatId
+            }));
+          }
+        });
+      }
       return res.status(200).json({
         message: "Вы покинули чат. Чат удалён полностью, т.к. участников не осталось."
       });
     }
-    console.log(clientsMap)
-    const client = clientsMap.get(userId);
-    if (client && client.readyState === 1) {
-      const payload = {
-        type: "chat_removed",
-        chat_id: chatId,
-      };
-      client.send(JSON.stringify(payload));
-    }
+    const userSockets = clientsMap.get(userId);
+      if (userSockets instanceof Set) {
+        const payload = JSON.stringify({
+          type: "chat_removed",
+          chat_id: chatId,
+        });
+        userSockets.forEach(socket => {
+          if (socket.readyState === 1) {
+            socket.send(payload);
+          }
+        });
+      }
     res.status(200).json({
       message: "Вы покинули чат",
       remaining_participants: remainingCount,
@@ -224,7 +237,7 @@ export const leaveChat = async (req, res) => {
 };
 export const sendMessage = async (req, res) => {
   const senderId = req.user.id;
-  const { chat_id, ciphertext, nonce, messages, chatName } = req.body;
+  const { chat_id, ciphertext, nonce, messages, chatName, reply_to_id } = req.body;
   if (!chat_id) return res.status(422).json({ message: "chat_id обязателен" });
   try {
     const chatRes = await pool.query(
@@ -244,21 +257,28 @@ export const sendMessage = async (req, res) => {
       [chat_id]
     );
     const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
-    const { rows: tokenRows } = await pool.query(
-      `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
-      [participantIds]
+    if (participantIds.length > 0) {
+    const { rows: alreadyUnread } = await pool.query(
+        `SELECT user_id FROM unread WHERE chat_id = $1 AND user_id = ANY($2)`,
+        [chat_id, participantIds]
     );
-    const expoTokens = tokenRows
-      .map(u => u.expo_push_token)
-      .filter(t => t && t.startsWith("ExponentPushToken"));
-    if (expoTokens.length > 0) {
-      const title = messages
-        ? `${chatName}`
-        : `${sender.usersurname} ${sender.username}`;
-      const body = "Получено новое сообщение";
-      sendExpoPush(expoTokens, title, body, {chat_id,
-              type: "message_new"})
-      }
+    const alreadyUnreadIds = alreadyUnread.map(r => r.user_id);
+    const idsToNotify = participantIds.filter(id => !alreadyUnreadIds.includes(id));
+    if (idsToNotify.length > 0) {
+        const { rows: tokenRows } = await pool.query(
+            `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
+            [idsToNotify]
+        );
+        const expoTokens = tokenRows
+            .map(u => u.expo_push_token)
+            .filter(t => t && t.startsWith("ExponentPushToken"));
+        if (expoTokens.length > 0) {
+            const title = messages ? `${chatName}` : `${sender.usersurname} ${sender.username}`;
+            const body = "Получено новое сообщение";
+            sendExpoPush(expoTokens, title, body, { chat_id, type: "message_new" });
+        }
+    }
+}
     
 
     // ============================================================
@@ -269,10 +289,10 @@ export const sendMessage = async (req, res) => {
         return res.status(422).json({ message: "ciphertext и nonce обязательны" });
       const recipientId = participantIds[0] || senderId;
       const insertRes = await pool.query(
-        `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, reply_to_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
          RETURNING *`,
-        [chat_id, senderId, recipientId, ciphertext, nonce]
+        [chat_id, senderId, recipientId, ciphertext, nonce, reply_to_id]
       );
 
       let msg = insertRes.rows[0];
@@ -301,6 +321,7 @@ export const sendMessage = async (req, res) => {
         sender_name: sender.username,
         sender_surname: sender.usersurname,
         parent_id: msg.id,
+        reply_to_id: msg.reply_to_id,
         sender_avatar: sender.avatar_url,
         ciphertext,
         nonce,
@@ -328,10 +349,10 @@ export const sendMessage = async (req, res) => {
     const insertedRows = [];
     for (const msg of messages) {
       const insertRes = await pool.query(
-          `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, parent_id)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, parent_id, reply_to_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *`,
-          [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce, parentId])
+          [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce, parentId, reply_to_id])
       let row = insertRes.rows[0];
       if (!parentId) {
           parentId = row.id;
@@ -344,7 +365,8 @@ export const sendMessage = async (req, res) => {
       insertedRows.push({
         id: row.id,
         parent_id: row.parent_id,
-        user_id: msg.user_id,       
+        user_id: msg.user_id,      
+        reply_to_id: row.reply_to_id, 
         ciphertext: row.ciphertext,
         nonce: row.nonce
       });
@@ -370,6 +392,7 @@ export const sendMessage = async (req, res) => {
       sender_name: sender.username,
       sender_surname: sender.usersurname,
       sender_avatar: sender.avatar_url,
+      reply_to_id: reply_to_id || null,
       created_at: insertedRows[0]?.created_at || new Date().toISOString(),
       messages: insertedRows     
     };
@@ -399,12 +422,12 @@ export const getMessages = async (req, res) => {
       return res.status(422).json({ message: "chat_id required" });
     }
     const result = await pool.query(
-      `SELECT m.id, m.recipient_id, m.chat_id, m.sender_id, m.parent_id, m.ciphertext, m.nonce, m.created_at,
+      `SELECT m.id, m.recipient_id, m.chat_id, m.sender_id, m.parent_id, m.ciphertext, m.nonce, m.created_at, m.updated_at, m.reply_to_id,
               u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar, u.public_key AS sender_public_key 
        FROM messages m
        JOIN users u ON m.sender_id = u.id
        WHERE m.chat_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
-       ORDER BY m.created_at ASC`,
+       ORDER BY m.created_at DESC`,
       [chat_id, userId]
     );
     return res.status(200).json(result.rows);
@@ -466,10 +489,14 @@ export const addParticipant = async (req, res) => {
         chat_type
       };
     
-    const ws = clientsMap.get(newUserId);
-      if (ws && ws.readyState === 1) {
-        ws.send(JSON.stringify(payload));
-      }
+    const userSockets = clientsMap.get(newUserId);
+    if (userSockets instanceof Set) {
+      userSockets.forEach(socket => {
+        if (socket.readyState === 1) {
+          socket.send(JSON.stringify(payload));
+        }
+      });
+    }
     return res.status(200).json({
       status: "ok",
       user_id: newUserId,
@@ -610,7 +637,7 @@ export const updateMessage = async (req, res) => {
     if (message.type === "private") {
       const { rows: updatedRows } = await pool.query(
         `UPDATE messages 
-         SET ciphertext = $1, nonce = $2
+         SET ciphertext = $1, nonce = $2, updated_at = NOW()
          WHERE id = $3
          RETURNING *`,
         [ciphertext, nonce, messageId]
@@ -648,7 +675,7 @@ export const updateMessage = async (req, res) => {
         for (const msg of messages) {
         const { rows: updatedRows } = await pool.query(
           `UPDATE messages
-          SET ciphertext = $1, nonce = $2
+          SET ciphertext = $1, nonce = $2, updated_at = NOW()
           WHERE (id = $3 OR parent_id = $3) AND recipient_id = $4
           RETURNING *`,
           [msg.ciphertext, msg.nonce, rootId, msg.recipient_id] 

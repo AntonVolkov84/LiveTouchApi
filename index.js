@@ -9,8 +9,10 @@ import multer from "multer";
 import authRoutes from "./routes/authRoutes.js";
 import chatsRoutes from "./routes/chatsRoutes.js"
 import errorsRouter from "./routes/errorsRouter.js"
+import sellerRouter from "./routes/sellerRouter.js"
 import {sendExpoPush} from './controllers/chatController.js'
 import { pool} from './db/db.js';
+import { initTelegramBot } from './services/telegramBot.js';
 
 const app = express();
 
@@ -33,12 +35,13 @@ app.use(cors({
 
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ limit: "20mb", extended: true }));
-
+initTelegramBot();
 const upload = multer({ dest: "uploads/" });
 
 app.use("/auth", authRoutes);
 app.use("/chats", chatsRoutes);
 app.use("/errors", errorsRouter);
+app.use("/seller", sellerRouter);
 
 app.post("/upload", upload.single("file"), minioController.uploadMinIO)
 app.post("/miniodata", minioController.addChatFile)
@@ -106,50 +109,90 @@ wss.on("connection", (ws) => {
           );
         }
         try {
-          targetWs?.send(JSON.stringify({
-            ...data,
-            sender: data.sender || null
-          }));
+          if (targetWs && targetWs instanceof Set) {
+            targetWs.forEach((socket) => {
+              if (socket.readyState === 1) { 
+                try {
+                  socket.send(JSON.stringify({
+                    ...data,
+                    callerName: callerName,
+                    sender: data.sender || null
+                  }));
+                } catch (e) {
+                  console.error("Error sending to one of the devices:", e);
+                }
+              }
+            });
+          }
         } catch(e) {
           console.error("Error sending WS message", e);
         }
           
           break;
       }
-      case "answer":
-        targetWs?.send(JSON.stringify({
+      case "answer": {
+        const payload = JSON.stringify({
           ...data,
           sender: data.sender || null
-        }));
+        });
+        if (targetWs && targetWs instanceof Set) {
+          targetWs.forEach((socket) => {
+            if (socket.readyState === 1) socket.send(payload);
+          });
+        }
+        const senderWs = clientsMap.get(data.sender);
+        if (senderWs instanceof Set) {
+          senderWs.forEach((socket) => {
+            if (socket.readyState === 1 && socket !== ws) { 
+              socket.send(payload);
+            }
+          });
+        }
         break;
+      }
       case "call-ended": {
         pendingCalls.delete(data.target);
         pendingCalls.delete(data.sender);
-        const senderWs = clientsMap.get(data.sender);
-        targetWs?.send(JSON.stringify({
+        const senderWs = clientsMap.get(data.sender); 
+        const payload = JSON.stringify({
           ...data,
           sender: data.sender || null
-        }));
-        senderWs?.send(JSON.stringify({
-          ...data,
-          sender: data.sender || null
-        }));
-        break;
-      }
+        });
+        if (targetWs instanceof Set) {
+          targetWs.forEach(socket => {
+            if (socket.readyState === 1) socket.send(payload);
+          });
+        }
+          if (senderWs instanceof Set) {
+            senderWs.forEach(socket => {
+              if (socket.readyState === 1) socket.send(payload);
+            });
+          }
+          break;
+        }
       case "ice-candidate":
         if (!targetWs) {
-          const pending = pendingCalls.get(data.target);
-          if (pending) {
-            pending.ice.push(data);
-          }
+        const pending = pendingCalls.get(data.target);
+        if (pending) {
+          pending.ice.push(data);
         }
-        targetWs?.send(JSON.stringify({
+      } else if (targetWs instanceof Set) {
+        const payload = JSON.stringify({
           ...data,
           sender: data.sender || null
-        }));
+        });
+          targetWs.forEach((socket) => {
+            if (socket.readyState === 1) {
+              try {
+                socket.send(payload);
+              } catch (e) {
+                console.error("Error sending ICE candidate:", e);
+              }
+            }
+          });
+        }
         break;
-      
-      default:
+        default:
         console.warn("Unknown WS type:", data.type);
     }
     } catch (err) {

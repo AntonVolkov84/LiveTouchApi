@@ -65,7 +65,8 @@ async function createTable() {
         recipient_id INT REFERENCES users(id) ON DELETE CASCADE,
         ciphertext TEXT NOT NULL,   
         nonce TEXT NOT NULL, 
-        parent_id INT REFERENCES messages(id) ON DELETE CASCADE,   
+        parent_id INT REFERENCES messages(id) ON DELETE CASCADE,  
+        reply_to_id INT REFERENCES messages(id) ON DELETE SET NULL, 
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
     );
@@ -101,6 +102,41 @@ async function createTable() {
         created_at TIMESTAMP DEFAULT NOW(),
         expires_at TIMESTAMP DEFAULT (NOW() + INTERVAL '5 minutes') 
       );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS products (
+      id SERIAL PRIMARY KEY,
+      seller_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name VARCHAR(255) NOT NULL,
+      description TEXT,
+      image_name TEXT,
+      price DECIMAL(10, 2) NOT NULL DEFAULT 0,
+      quantities DECIMAL(10, 3) NOT NULL DEFAULT 0, -- Вес в кг (например, 0.500)
+      image_url TEXT, -- Ссылка на фото в MinIO
+      is_active BOOLEAN DEFAULT TRUE,
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+  );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS seller_profiles (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+      shop_name VARCHAR(255) NOT NULL,
+      phone VARCHAR(20) NOT NULL,
+      opening_time TIME, 
+      closing_time TIME, 
+      payment_details TEXT, 
+      telegram_chat_id BIGINT, 
+      location_lat DOUBLE PRECISION,
+      location_lng DOUBLE PRECISION,
+      geohash VARCHAR(20),
+      created_at TIMESTAMP DEFAULT NOW(),
+      updated_at TIMESTAMP DEFAULT NOW()
+  );
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_seller_geohash ON seller_profiles(geohash);
     `);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);

@@ -1,4 +1,3 @@
-import { v4 as uuidv4 } from 'uuid';
 import { minioClient } from '../minio.js';
 import { pool } from "../db/db.js"; 
 
@@ -40,4 +39,24 @@ export const addChatFile = async (req, res) => {
     console.error("Error adding chat file:", err);
     res.status(500).json({ message: "Internal server error" });
   }
+};
+export const deleteFileMinIO = async (bucket, filename) => {
+  try {
+    await minioClient.removeObject(bucket, filename);
+    console.log(`File ${filename} removed from bucket ${bucket}`);
+    return true;
+  } catch (err) {
+    console.error("MinIO delete error:", err);
+    return false;
+  }
+};
+export const uploadToMinioHelper = async (file, bucket, filename) => {
+  if (!file) throw new Error("File not provided");
+  
+  await minioClient.fPutObject(bucket, filename, file.path, {
+    'Content-Type': file.mimetype
+  });
+
+  // Возвращаем готовую ссылку
+  return `https://api.livetouch.chat/${bucket}/${filename}`;
 };

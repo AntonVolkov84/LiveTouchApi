@@ -109,8 +109,20 @@ export const login = async (req, res) => {
       [public_key, expoToken || null, user.id]
     );
     const { accessToken, refreshToken } = generateTokens(user);
-    const { password_hash, ...userSafe } = user;
-    res.status(200).json({ accessToken, refreshToken, user: userSafe });
+    const userResponse = {
+      id: user.id,
+      userername: user.username,
+      usersurname: user.usersurname,
+      email: user.email,
+      avatar_url: user.avatar_url,
+      phone: user.phone,
+      bio: user.bio,
+      is_verified: user.is_verified,
+      created_at: user.created_at,
+      public_key: user.public_key,
+      role: user.role
+    };
+    res.status(200).json({ accessToken, refreshToken, user: userResponse });
     } catch (err) {
     console.error("mobile login error:", err);
     res.status(500).json({ message: "Internal server error" });
@@ -135,6 +147,7 @@ export const me = async (req, res) => {
       is_verified: result.rows[0].is_verified,
       created_at: result.rows[0].created_at,
       public_key: result.rows[0].public_key,
+      role: result.rows[0].role
     });
   } catch (error) {
     console.error("Error fetching mobile user info:", error);
@@ -428,7 +441,7 @@ export const checkQrStatus = async (req, res) => {
       return res.status(410).json({ message: "Сессия истекла" });
     }
     if (session.status === 'completed') {
-      const userRes = await pool.query("SELECT id, username, usersurname, email, avatar_url FROM users WHERE id = $1", [session.user_id]);
+      const userRes = await pool.query("SELECT id, username, usersurname, email, avatar_url, role, phone, bio, is_verified FROM users WHERE id = $1", [session.user_id]);
       return res.json({
         status: 'completed',
         encryptedData: session.encrypted_data,
