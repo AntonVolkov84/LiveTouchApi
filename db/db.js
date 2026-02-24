@@ -67,6 +67,7 @@ async function createTable() {
         nonce TEXT NOT NULL, 
         parent_id INT REFERENCES messages(id) ON DELETE CASCADE,  
         reply_to_id INT REFERENCES messages(id) ON DELETE SET NULL, 
+        deleted_at TIMESTAMP DEFAULT NULL,
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW()
     );
@@ -142,6 +143,7 @@ async function createTable() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_user_id ON chat_participants(chat_id, user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_deleted_at ON messages(deleted_at) WHERE deleted_at IS NULL;`);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {
