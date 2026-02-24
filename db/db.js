@@ -138,6 +138,10 @@ async function createTable() {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_seller_geohash ON seller_profiles(geohash);
     `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_user_id ON chat_participants(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_user_id ON chat_participants(chat_id, user_id);`);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {
