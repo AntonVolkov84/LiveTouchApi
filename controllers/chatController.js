@@ -237,16 +237,10 @@ export const leaveChat = async (req, res) => {
 };
 export const sendMessage = async (req, res) => {
   const senderId = req.user.id;
-  const { chat_id, ciphertext, nonce, messages, chatName, reply_to_id } = req.body;
+  const { chat_id, messages, chatName, chat_type, reply_to_id } = req.body;
   if (!chat_id) return res.status(422).json({ message: "chat_id обязателен" });
+  if (!Array.isArray(messages)) return res.status(422).json({ message: "messages должен быть массивом" });
   try {
-    const chatRes = await pool.query(
-      "SELECT type FROM chats WHERE id = $1",
-      [chat_id]
-    );
-    if (chatRes.rows.length === 0)
-      return res.status(404).json({ message: "Чат не найден" });
-    const chatType = chatRes.rows[0].type;
     const userRes = await pool.query(
       "SELECT username, usersurname, avatar_url FROM users WHERE id = $1",
       [senderId]
@@ -273,78 +267,12 @@ export const sendMessage = async (req, res) => {
             .map(u => u.expo_push_token)
             .filter(t => t && t.startsWith("ExponentPushToken"));
         if (expoTokens.length > 0) {
-            const title = messages ? `${chatName}` : `${sender.usersurname} ${sender.username}`;
+            const title = chat_type === "group" ? chatName : `${sender.usersurname} ${sender.username}`;
             const body = "Получено новое сообщение";
             sendExpoPush(expoTokens, title, body, { chat_id, type: "message_new" });
         }
     }
 }
-    
-
-    // ============================================================
-    //                     PRIVATE CHAT
-    // ============================================================
-    if (chatType === "private") {
-      if (!ciphertext || !nonce)
-        return res.status(422).json({ message: "ciphertext и nonce обязательны" });
-      const recipientId = participantIds[0] || senderId;
-      const insertRes = await pool.query(
-        `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, reply_to_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         RETURNING *`,
-        [chat_id, senderId, recipientId, ciphertext, nonce, reply_to_id]
-      );
-
-      let msg = insertRes.rows[0];
-
-      const updateRes = await pool.query(
-        `UPDATE messages SET parent_id = $1 WHERE id = $1 RETURNING *`,
-        [msg.id]
-      );
-      msg = updateRes.rows[0];
-
-      const otherParticipant = participants.find(p => p.user_id !== senderId);
-      if (otherParticipant) {
-        await pool.query(
-          `INSERT INTO unread(user_id, chat_id)
-          VALUES ($1, $2)
-          ON CONFLICT DO NOTHING`,
-          [otherParticipant.user_id, chat_id]
-        );
-      }
-
-      const payload = {
-        type: "message_new",
-        chat_id,
-        id: msg.id,
-        sender_id: senderId,
-        sender_name: sender.username,
-        sender_surname: sender.usersurname,
-        parent_id: msg.id,
-        reply_to_id: msg.reply_to_id,
-        sender_avatar: sender.avatar_url,
-        ciphertext,
-        nonce,
-        created_at: msg.created_at,
-      };
-      participants.forEach(({ user_id }) => {
-        const sockets = clientsMap.get(user_id);
-        if (sockets) {
-          sockets.forEach(s => {
-            if (s.readyState === 1) s.send(JSON.stringify(payload));
-          });
-        }
-      });
-
-      return res.status(200).json(msg);
-    }
-
-    // ============================================================
-    //                      GROUP CHAT
-    // ============================================================
-    if (!Array.isArray(messages)) {
-      return res.status(422).json({ message: "messages обязателен для группы" });
-    }
     let parentId = null;
     const insertedRows = [];
     for (const msg of messages) {
@@ -368,23 +296,18 @@ export const sendMessage = async (req, res) => {
         user_id: msg.user_id,      
         reply_to_id: row.reply_to_id, 
         ciphertext: row.ciphertext,
-        nonce: row.nonce
+        nonce: row.nonce,
+        created_at: row.created_at
       });
     }
-
-    const otherParticipantIds = participants
-  .map(p => p.user_id)
-  .filter(id => id !== senderId);
-
-    if (otherParticipantIds.length > 0) {
-      const values = otherParticipantIds.map(id => `(${id}, ${chat_id})`).join(",");
+    if (participantIds.length > 0) {
+      const values = participantIds.map(id => `(${id}, ${chat_id})`).join(",");
       await pool.query(
         `INSERT INTO unread(user_id, chat_id)
-        VALUES ${values}
-        ON CONFLICT DO NOTHING`
+         VALUES ${values}
+         ON CONFLICT DO NOTHING`
       );
     }
-
     const payload = {
       type: "message_new",
       chat_id,
@@ -396,7 +319,6 @@ export const sendMessage = async (req, res) => {
       created_at: insertedRows[0]?.created_at || new Date().toISOString(),
       messages: insertedRows     
     };
-
     participants.forEach(({ user_id }) => {
       const sockets = clientsMap.get(user_id);
       if (sockets) {
@@ -405,19 +327,18 @@ export const sendMessage = async (req, res) => {
         });
       }
     });
-
     return res.status(200).json({ status: "ok", inserted: insertedRows });
-
   } catch (err) {
     console.error("sendMessage error:", err);
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
-
 export const getMessages = async (req, res) => {
   try {
     const { chat_id } = req.params;
     const userId = req.user.id;
+    const limit = parseInt(req.query.limit) || 20; 
+    const offset = parseInt(req.query.offset) || 0;
     if (!chat_id) {
       return res.status(422).json({ message: "chat_id required" });
     }
@@ -426,9 +347,11 @@ export const getMessages = async (req, res) => {
               u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar, u.public_key AS sender_public_key 
        FROM messages m
        JOIN users u ON m.sender_id = u.id
-       WHERE m.chat_id = $1 AND (m.recipient_id = $2 OR m.sender_id = $2)
-       ORDER BY m.created_at DESC`,
-      [chat_id, userId]
+       WHERE m.chat_id = $1 AND m.recipient_id = $2
+       AND m.deleted_at IS NULL
+       ORDER BY m.created_at DESC
+       LIMIT $3 OFFSET $4`,
+      [chat_id, userId, limit, offset]
     );
     return res.status(200).json(result.rows);
   } catch (err) {
@@ -507,7 +430,6 @@ export const addParticipant = async (req, res) => {
     return res.status(500).json({ error: "Внутренняя ошибка сервера" });
   }
 };
-
 export const getUnread = async (req, res) => {
   const userId = req.user.id;
   try {
@@ -553,10 +475,81 @@ export const clearAllUnread = async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 };
-export const deleteMessage = async (req, res) => {
+export const updateMessage = async (req, res) => {
   const userId = req.user.id;
   const messageId = Number(req.params.messageId);
-  console.log(userId, messageId)
+  const {messages } = req.body;
+  if (!Array.isArray(messages)) {
+    return res.status(422).json({ message: "Поле messages (массив) обязательно" });
+  }
+  try {
+    const { rows } = await pool.query(
+      `SELECT m.chat_id, m.sender_id, m.deleted_at, m.parent_id, c.type 
+       FROM messages m 
+       JOIN chats c ON m.chat_id = c.id 
+       WHERE m.id = $1`,
+      [messageId]
+    );
+    if (rows.length === 0) {
+      return res.status(404).json({ message: "Сообщение не найдено" });
+    }
+    const message = rows[0];
+     if (message.deleted_at) {
+      return res.status(400).json({ message: "Нельзя редактировать удаленное сообщение" });
+    }
+    if (message.sender_id !== userId) return res.status(403).json({ message: "Нет прав" });
+    const rootId = message.parent_id || message.id;
+    const { rows: senderRows } = await pool.query(
+      "SELECT username, usersurname, avatar_url, public_key FROM users WHERE id = $1",
+      [userId]
+    );
+    const sender = senderRows[0];
+    const updatedMessages = [];
+        for (const msg of messages) {
+        const { rows: updatedRows } = await pool.query(
+          `UPDATE messages
+          SET ciphertext = $1, nonce = $2, updated_at = NOW()
+          WHERE (id = $3 OR parent_id = $3) AND recipient_id = $4
+          RETURNING *`,
+          [msg.ciphertext, msg.nonce, rootId, msg.recipient_id] 
+        );
+        const updated = updatedRows[0];
+        if (updated) {
+          updatedMessages.push({
+          ...updated,
+          user_id: msg.recipient_id,
+          sender_id: userId,        
+          sender_name: sender.username,
+          sender_surname: sender.usersurname,
+          sender_avatar: sender.avatar_url,
+          sender_public_key: sender.public_key
+        });
+      }
+      }
+      const payload = {
+        type: "message_updated",
+        chat_id: message.chat_id,
+        messages: updatedMessages
+      };
+      const { rows: participants } = await pool.query(
+      "SELECT user_id FROM chat_participants WHERE chat_id = $1",
+      [message.chat_id]
+    );
+    participants.forEach(p => {
+      const sockets = clientsMap.get(p.user_id); 
+      if (sockets) {
+        sockets.forEach(s => { if (s.readyState === 1) s.send(JSON.stringify(payload)); });
+      }
+    });
+    return res.status(200).json({ status: "ok", updated: updatedMessages });
+  } catch (err) {
+    console.error("updateMessage error:", err);
+    return res.status(500).json({ message: "Ошибка сервера" });
+  }
+};
+export const deleteMessageAllParticipants = async (req, res) => {
+  const userId = req.user.id;
+  const messageId = Number(req.params.messageId);
   try {
     const { rows } = await pool.query(
       "SELECT chat_id, sender_id, parent_id FROM messages WHERE id = $1",
@@ -571,7 +564,7 @@ export const deleteMessage = async (req, res) => {
     }
     const targetId = message.parent_id || messageId;
     await pool.query(
-      "DELETE FROM messages WHERE id = $1 OR parent_id = $1", 
+      "UPDATE messages SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 OR parent_id = $1", 
       [targetId]
     );
     const { rows: participants } = await pool.query(
@@ -591,132 +584,27 @@ export const deleteMessage = async (req, res) => {
         });
       }
     });
-    res.status(200).json({ message: "Сообщение удалено" });
+    res.status(200).json({ message: "Сообщение удалено (архивировано)" });
   } catch (err) {
     console.error("deleteMessage error:", err);
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
-export const updateMessage = async (req, res) => {
+export const deleteMessageForMe = async (req, res) => {
   const userId = req.user.id;
   const messageId = Number(req.params.messageId);
-  const { ciphertext, nonce, messages } = req.body;
-  if (!ciphertext && !messages) {
-    return res.status(422).json({ message: "ciphertext или messages обязательны" });
-  }
+  console.log(userId, messageId)
   try {
-    const { rows } = await pool.query(
-      `SELECT m.chat_id, m.sender_id, m.parent_id, c.type 
-       FROM messages m 
-       JOIN chats c ON m.chat_id = c.id 
-       WHERE m.id = $1`,
-      [messageId]
+    const { rowCount } = await pool.query(
+      "UPDATE messages SET deleted_at = NOW() WHERE id = $1 AND recipient_id = $2",
+      [messageId, userId]
     );
-    if (rows.length === 0) {
-      return res.status(404).json({ message: "Сообщение не найдено" });
+    if (rowCount === 0) {
+      return res.status(404).json({ message: "Сообщение не найдено или уже удалено" });
     }
-    const message = rows[0];
-    const rootId = message.parent_id || message.id;
-    if (message.sender_id !== userId) {
-      return res.status(403).json({ message: "Нет прав на редактирование сообщения" });
-    }
-    // ==== Данные отправителя ====
-    const { rows: senderRows } = await pool.query(
-      "SELECT username, usersurname, avatar_url, public_key FROM users WHERE id = $1",
-      [userId]
-    );
-    const sender = senderRows[0];
-    // ==== Участники ====
-    const { rows: participants } = await pool.query(
-      "SELECT user_id FROM chat_participants WHERE chat_id = $1",
-      [message.chat_id]
-    );
-    // ===================================================================
-    // PRIVATE
-    // ===================================================================
-    if (message.type === "private") {
-      const { rows: updatedRows } = await pool.query(
-        `UPDATE messages 
-         SET ciphertext = $1, nonce = $2, updated_at = NOW()
-         WHERE id = $3
-         RETURNING *`,
-        [ciphertext, nonce, messageId]
-      );
-      const updated = updatedRows[0];
-      const payload = {
-        type: "message_updated",
-        chat_id: message.chat_id,
-        message: {
-          ...updated,
-          sender_name: sender.username,
-          sender_surname: sender.usersurname,
-          sender_avatar: sender.avatar_url,
-          sender_public_key: sender.public_key
-        }
-      };
-      participants.forEach(p => {
-      const sockets = clientsMap.get(p.user_id); 
-      if (sockets && sockets.size > 0) {
-        sockets.forEach(s => {
-          if (s.readyState === 1) {
-            s.send(JSON.stringify(payload));
-          }
-        });
-      }
-    });
-      return res.status(200).json(updated);
-    }
-
-    // ===================================================================
-    // GROUP
-    // ===================================================================
-    if (message.type === "group" && Array.isArray(messages)) {
-      const updatedMessages = [];
-        for (const msg of messages) {
-        const { rows: updatedRows } = await pool.query(
-          `UPDATE messages
-          SET ciphertext = $1, nonce = $2, updated_at = NOW()
-          WHERE (id = $3 OR parent_id = $3) AND recipient_id = $4
-          RETURNING *`,
-          [msg.ciphertext, msg.nonce, rootId, msg.recipient_id] 
-        );
-        const updated = updatedRows[0];
-        if (updated) {
-          console.log(`✅ Успешно обновлено: id=${updated.id}, parent_id=${updated.parent_id}`);
-          updatedMessages.push({
-          ...updated,
-          user_id: msg.recipient_id,
-          sender_id: userId,        
-          sender_name: sender.username,
-          sender_surname: sender.usersurname,
-          sender_avatar: sender.avatar_url,
-          sender_public_key: sender.public_key
-        });
-      } else {
-        console.warn(`❌ Строка НЕ НАЙДЕНА в базе для recipient_id: ${msg.recipient_id}`);
-      }
-      }
-      const payload = {
-        type: "message_updated",
-        chat_id: message.chat_id,
-        messages: updatedMessages
-      };
-      participants.forEach(p => {
-      const sockets = clientsMap.get(p.user_id); 
-      if (sockets && sockets.size > 0) {
-        sockets.forEach(s => {
-          if (s.readyState === 1) {
-            s.send(JSON.stringify(payload));
-          }
-        });
-      }
-    });
-      return res.status(200).json({ status: "ok", updated: updatedMessages });
-    }
-    return res.status(400).json({ message: "Невозможно обновить сообщение" });
+    res.status(200).json({ message: "Сообщение удалено у вас" });
   } catch (err) {
-    console.error("updateMessage error:", err);
-    return res.status(500).json({ message: "Ошибка сервера" });
+    res.status(500).json({ message: "Ошибка сервера" });
   }
 };
 
