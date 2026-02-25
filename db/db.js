@@ -45,7 +45,8 @@ async function createTable() {
         id SERIAL PRIMARY KEY,
         type VARCHAR(10) NOT NULL, 
         name VARCHAR(255),    
-        created_at TIMESTAMP DEFAULT NOW()
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
       );
     `);
     await client.query(`
@@ -53,8 +54,9 @@ async function createTable() {
         id SERIAL PRIMARY KEY,
         chat_id INT REFERENCES chats(id) ON DELETE CASCADE,
         user_id INT NOT NULL,
-        UNIQUE(chat_id, user_id),
-        public_key TEXT
+        joined_at TIMESTAMP DEFAULT NOW(),
+        left_at TIMESTAMP DEFAULT NULL,
+        UNIQUE(chat_id, user_id)
       );
     `);
     await client.query(`
@@ -144,6 +146,7 @@ async function createTable() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_user_id ON chat_participants(chat_id, user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_deleted_at ON messages(deleted_at) WHERE deleted_at IS NULL;`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats (updated_at DESC);`);
   } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {

@@ -54,25 +54,34 @@ export const createPrivateChat = async (req, res) => {
        WHERE c.type = 'private'`,
       [userId, otherUserId]
     );
+    let chatId;
+    let isRestored = false;
     if (existingChat.rows.length > 0) {
-      return res.status(200).json({ chatId: existingChat.rows[0].id, message: "Чат уже существует" });
+      chatId = existingChat.rows[0].id;
+      isRestored = true;
+      await pool.query(
+        `UPDATE chat_participants 
+         SET left_at = NULL, joined_at = NOW() 
+         WHERE chat_id = $1 AND (user_id = $2 OR user_id = $3)`,
+        [chatId, userId, otherUserId]
+      );
+    } else {
+      const newChat = await pool.query(
+        "INSERT INTO chats(type) VALUES($1) RETURNING id",
+        ["private"]
+      );
+      chatId = newChat.rows[0].id;
+      await pool.query(
+        "INSERT INTO chat_participants(chat_id, user_id) VALUES ($1, $2), ($1, $3)",
+        [chatId, userId, otherUserId]
+      );
     }
-    const newChat = await pool.query(
-      "INSERT INTO chats(type) VALUES($1) RETURNING id",
-      ["private"]
-    );
-    const chatId = newChat.rows[0].id;
-    await pool.query(
-      "INSERT INTO chat_participants(chat_id, user_id) VALUES ($1, $2), ($1, $3)",
-      [chatId, userId, otherUserId]
-    );
-       const payload = {
-      type: "chat_created",
+    const payload = {
+      type: "chat_created", 
       chat_id: chatId,
       participants: [userId, otherUserId],
       createdAt: new Date().toISOString()
     };
-
     [userId, otherUserId].forEach(id => {
       const userSockets = clientsMap.get(id); 
       if (userSockets instanceof Set) {
@@ -83,9 +92,12 @@ export const createPrivateChat = async (req, res) => {
         });
       }
     });
-    res.status(201).json({ chatId, message: "Приватный чат создан" });
+  res.status(isRestored ? 200 : 201).json({ 
+      chatId, 
+      message: isRestored ? "Чат восстановлен из архива" : "Приватный чат создан" 
+    });
   } catch (err) {
-    console.error(err);
+    console.error("createPrivateChat error:", err);
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
@@ -93,11 +105,11 @@ export const getUserChats = async (req, res) => {
   try {
     const userId = req.user.id;
     const { rows: chats } = await pool.query(
-      `SELECT c.id AS chat_id, c.type, c.name, c.created_at
+      `SELECT c.id AS chat_id, c.type, c.name, c.created_at, c.updated_at
        FROM chats c
        JOIN chat_participants cp ON c.id = cp.chat_id
-       WHERE cp.user_id = $1
-       ORDER BY c.created_at DESC`,
+       WHERE cp.user_id = $1 AND cp.left_at IS NULL
+       ORDER BY c.updated_at DESC`,
       [userId]
     );
 
@@ -174,61 +186,30 @@ export const createGroupChat = async (req, res) => {
 export const leaveChat = async (req, res) => {
   const userId = req.user.id;
   const chatId = Number(req.params.chatId);
-    try {
+  try {
     const check = await pool.query(
       "SELECT * FROM chat_participants WHERE chat_id = $1 AND user_id = $2",
       [chatId, userId]
     );
     if (check.rows.length === 0) {
-      return res.status(403).json({ message: "Вы не участвуете в этом чате" });
+      return res.status(404).json({ message: "Связь с чатом не найдена" });
     }
     await pool.query(
-      "DELETE FROM chat_participants WHERE chat_id = $1 AND user_id = $2",
+      "UPDATE chat_participants SET left_at = NOW() WHERE chat_id = $1 AND user_id = $2",
       [chatId, userId]
     );
-    const participants = await pool.query(
-      "SELECT user_id FROM chat_participants WHERE chat_id = $1",
-      [chatId]
-    );
-    const remainingCount = participants.rowCount;
-    if (remainingCount === 0) {
-      const filesRes = await pool.query("SELECT * FROM chat_files WHERE chat_id = $1", [chatId]);
-      const files = filesRes.rows;
-      await Promise.all(
-        files.map(f => minioClient.removeObject(f.bucket, f.file_name))
-      );
-      await pool.query("DELETE FROM chat_files WHERE chat_id = $1", [chatId]);
-      await pool.query("DELETE FROM chats WHERE id = $1", [chatId]);
-      const userSockets = clientsMap.get(userId);
-      if (userSockets instanceof Set) {
-        userSockets.forEach(socket => {
-          if (socket.readyState === 1) {
-            socket.send(JSON.stringify({
-              type: "chat_removed",
-              chat_id: chatId
-            }));
-          }
-        });
-      }
-      return res.status(200).json({
-        message: "Вы покинули чат. Чат удалён полностью, т.к. участников не осталось."
+    const userSockets = clientsMap.get(userId);
+    if (userSockets instanceof Set) {
+      const payload = JSON.stringify({
+        type: "chat_removed", 
+        chat_id: chatId,
+      });
+      userSockets.forEach(socket => {
+        if (socket.readyState === 1) socket.send(payload);
       });
     }
-    const userSockets = clientsMap.get(userId);
-      if (userSockets instanceof Set) {
-        const payload = JSON.stringify({
-          type: "chat_removed",
-          chat_id: chatId,
-        });
-        userSockets.forEach(socket => {
-          if (socket.readyState === 1) {
-            socket.send(payload);
-          }
-        });
-      }
     res.status(200).json({
-      message: "Вы покинули чат",
-      remaining_participants: remainingCount,
+      message: "Чат скрыт (помечен как покинутый). Данные сохранены в архиве.",
     });
   } catch (err) {
     console.error("leaveChat error:", err);
@@ -242,7 +223,7 @@ export const sendMessage = async (req, res) => {
   if (!Array.isArray(messages)) return res.status(422).json({ message: "messages должен быть массивом" });
   try {
     const userRes = await pool.query(
-      "SELECT username, usersurname, avatar_url FROM users WHERE id = $1",
+      "SELECT username, usersurname, avatar_url, public_key FROM users WHERE id = $1",
       [senderId]
     );
     const sender = userRes.rows[0];
@@ -275,12 +256,22 @@ export const sendMessage = async (req, res) => {
 }
     let parentId = null;
     const insertedRows = [];
+    let finalReplyToId = reply_to_id; 
+    if (reply_to_id) {
+      const { rows: replySource } = await pool.query(
+        "SELECT id, parent_id FROM messages WHERE id = $1",
+        [reply_to_id]
+      );
+      if (replySource.length > 0) {
+        finalReplyToId = replySource[0].parent_id || replySource[0].id;
+      }
+    }
     for (const msg of messages) {
       const insertRes = await pool.query(
           `INSERT INTO messages (chat_id, sender_id, recipient_id, ciphertext, nonce, parent_id, reply_to_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
            RETURNING *`,
-          [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce, parentId, reply_to_id])
+          [chat_id, senderId, msg.user_id, msg.ciphertext, msg.nonce, parentId, finalReplyToId])
       let row = insertRes.rows[0];
       if (!parentId) {
           parentId = row.id;
@@ -294,11 +285,19 @@ export const sendMessage = async (req, res) => {
         id: row.id,
         parent_id: row.parent_id,
         user_id: msg.user_id,      
-        reply_to_id: row.reply_to_id, 
+        reply_to_id: finalReplyToId, 
         ciphertext: row.ciphertext,
         nonce: row.nonce,
         created_at: row.created_at
       });
+    }
+    try {
+      await pool.query(
+        "UPDATE chats SET updated_at = NOW() WHERE id = $1",
+        [chat_id]
+      );
+    } catch (updateErr) {
+     console.error("Ошибка обновления updated_at чата:", updateErr);
     }
     if (participantIds.length > 0) {
       const values = participantIds.map(id => `(${id}, ${chat_id})`).join(",");
@@ -315,7 +314,8 @@ export const sendMessage = async (req, res) => {
       sender_name: sender.username,
       sender_surname: sender.usersurname,
       sender_avatar: sender.avatar_url,
-      reply_to_id: reply_to_id || null,
+      sender_public_key: sender.public_key,
+      reply_to_id: finalReplyToId || null,
       created_at: insertedRows[0]?.created_at || new Date().toISOString(),
       messages: insertedRows     
     };
@@ -384,34 +384,28 @@ export const addParticipant = async (req, res) => {
     if (!email || !chat_id) {
       return res.status(400).json({ error: "email и chat_id обязательны" });
     }
-    const userRes = await pool.query(
-      "SELECT id FROM users WHERE email = $1",
-      [email]
-    );
+    const userRes = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
     if (userRes.rowCount === 0) {
       return res.status(404).json({ error: "Пользователь не найден" });
     }
     const newUserId = userRes.rows[0].id;
-    const participantRes = await pool.query(
-      "SELECT user_id FROM chat_participants WHERE chat_id = $1 AND user_id = $2",
-      [chat_id, newUserId]
-    );
-    if (participantRes.rowCount > 0) {
-      return res.status(409).json({ error: "Пользователь уже в чате" });
-    }
-    await pool.query(
-      `INSERT INTO chat_participants (chat_id, user_id)
-       VALUES ($1, $2)`,
+    const insertRes = await pool.query(
+      `INSERT INTO chat_participants (chat_id, user_id, joined_at, left_at)
+       VALUES ($1, $2, NOW(), NULL)
+       ON CONFLICT (chat_id, user_id) 
+       DO UPDATE SET 
+         left_at = NULL, 
+         joined_at = NOW() 
+       RETURNING left_at`,
       [chat_id, newUserId]
     );
     const payload = {
-        type: "add_participant",
-        chat_id,
-        created_at,
-        name: groupName,
-        chat_type
-      };
-    
+      type: "add_participant",
+      chat_id,
+      created_at: created_at || new Date().toISOString(),
+      name: groupName,
+      chat_type
+    };
     const userSockets = clientsMap.get(newUserId);
     if (userSockets instanceof Set) {
       userSockets.forEach(socket => {
