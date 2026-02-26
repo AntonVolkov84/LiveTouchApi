@@ -109,6 +109,7 @@ export const login = async (req, res) => {
       [public_key, expoToken || null, user.id]
     );
     const { accessToken, refreshToken } = generateTokens(user);
+    await logAuthAction(user.id, req, 'login');
     const userResponse = {
       id: user.id,
       userername: user.username,
@@ -162,6 +163,7 @@ export const refreshAccessToken = async (req, res) => {
     const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
     const userResult = await pool.query("SELECT id FROM users WHERE id=$1", [decoded.id]);
     if (!userResult.rows.length) return res.status(404).json({ message: "User not found" });
+    await logAuthAction(decoded.id, req, 'refresh');
     const accessToken = jwt.sign({ id: decoded.id, email: decoded.email }, process.env.JWT_SECRET, { expiresIn: "15m" });
     res.json({ accessToken });
   } catch (err) {
@@ -291,7 +293,7 @@ export const confirmEmail = async (req, res) => {
 export const updateAvatar = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { avatar_url } = req.body;
+    const { avatar_url } = req.body; 
     if (!avatar_url) {
       return res.status(400).json({ message: "avatar_url is required" });
     }
@@ -300,24 +302,16 @@ export const updateAvatar = async (req, res) => {
       [userId]
     );
     const oldUrl = oldData.rows[0]?.avatar_url;
-    if (oldUrl) {
-      try {
-        const parts = oldUrl.replace("https://api.livetouch.chat/", "").split("/");
-        const bucket = parts[0];
-        const object = parts.slice(1).join("/");
-        console.log(parts)
-        console.log(bucket)
-        console.log(object)
-        await minioClient.removeObject(bucket, object);
-        console.log("Old avatar removed:", oldUrl);
-      } catch (err) {
-        console.warn("Cannot delete old avatar (maybe not exist):", err.message);
-      }
-    }
     await pool.query(
       "UPDATE users SET avatar_url = $1 WHERE id = $2",
       [avatar_url, userId]
     );
+    if (oldUrl && oldUrl !== avatar_url) {
+      await pool.query(
+        "INSERT INTO profile_log (user_id, field_name, old_value, new_value) VALUES ($1, $2, $3, $4)",
+        [userId, 'avatar', oldUrl, avatar_url]
+      );
+    }
     res.json({ message: "Avatar updated", avatar_url });
   } catch (err) {
     console.error("updateAvatar error:", err);
@@ -348,14 +342,36 @@ export const updateProfile = async (req, res) => {
     if (bio.length > 500) {
       return res.status(400).json({ message: "Bio too long" });
     }
+    const currentRes = await pool.query(
+      "SELECT username, usersurname, bio, phone FROM users WHERE id = $1",
+      [userId]
+    );
+    const oldData = currentRes.rows[0];
 
+    const updates = { username, usersurname: surname, bio, phone };
+    const logs = [];
+    for (const key in updates) {
+      if (updates[key] !== undefined && String(updates[key]) !== String(oldData[key])) {
+        logs.push({
+          field: key === 'usersurname' ? 'surname' : key,
+          old: oldData[key],
+          new: updates[key]
+        });
+      }
+    }
+    if (logs.length === 0) return res.status(200).json({ message: "No changes" });
     await pool.query(
       `UPDATE users 
        SET username = $1, usersurname = $2, bio = $3, phone = $4
        WHERE id = $5`,
       [username, surname, bio, phone, userId]
     );
-
+    for (const log of logs) {
+      await pool.query(
+        "INSERT INTO profile_log (user_id, field_name, old_value, new_value) VALUES ($1, $2, $3, $4)",
+        [userId, log.field, log.old, log.new]
+      );
+    }
     res.status(200).json({
       message: "Profile updated",
       username,
@@ -465,6 +481,7 @@ export const completeQrAuth = async (req, res) => {
     const user = userResult.rows[0];
     if (!user) return res.status(404).json({ message: "Пользователь не найден" });
     const { accessToken, refreshToken } = generateTokens(user);
+    await logAuthAction(userId, req, 'login_qr');
     await pool.query(
       `UPDATE qr_sessions 
        SET status = 'completed', 
@@ -481,5 +498,17 @@ export const completeQrAuth = async (req, res) => {
   } catch (err) {
     console.error("QR Complete error:", err);
     res.status(500).json({ message: "Ошибка завершения авторизации" });
+  }
+};
+const logAuthAction = async (userId, req, action = 'login') => {
+  try {
+    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    await pool.query(
+      "INSERT INTO auth_log (user_id, ip_address, user_agent, action_type) VALUES ($1, $2, $3, $4)",
+      [userId, ip, userAgent, action]
+    );
+  } catch (err) {
+    console.error("Auth Log Error:", err);
   }
 };

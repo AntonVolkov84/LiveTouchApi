@@ -76,6 +76,8 @@ export const createPrivateChat = async (req, res) => {
         [chatId, userId, otherUserId]
       );
     }
+    await logParticipantAction(chatId, userId, 'join');
+    await logParticipantAction(chatId, otherUserId, 'join');
     const payload = {
       type: "chat_created", 
       chat_id: chatId,
@@ -143,7 +145,7 @@ export const createGroupChat = async (req, res) => {
     }
     const emails = [...participants];
     const usersRes = await pool.query(
-      `SELECT id, email FROM users WHERE email = ANY(ARRAY(SELECT unnest($1::text[])))`,
+      `SELECT id FROM users WHERE email = ANY($1::text[])`,
       [participants]
     );
     const foundUsers = usersRes.rows.map(u => u.id);
@@ -158,8 +160,14 @@ export const createGroupChat = async (req, res) => {
 
     const chatId = chat.rows[0].id;
     const insertValues = uniqueParticipants.map(uid => `(${chatId}, ${uid})`).join(",");
-    await pool.query(`INSERT INTO chat_participants(chat_id, user_id) VALUES ${insertValues}`);
-
+    await pool.query(
+      `INSERT INTO chat_participants (chat_id, user_id)
+       SELECT $1, unnest($2::int[])`,
+      [chatId, uniqueParticipants]
+    );
+    await Promise.all(
+      uniqueParticipants.map(uid => logParticipantAction(chatId, uid, 'join'))
+    );
     const payload = {
       type: "group_created",
       chat_id: chatId,
@@ -198,6 +206,7 @@ export const leaveChat = async (req, res) => {
       "UPDATE chat_participants SET left_at = NOW() WHERE chat_id = $1 AND user_id = $2",
       [chatId, userId]
     );
+    await logParticipantAction(chatId, userId, 'leave');
     const userSockets = clientsMap.get(userId);
     if (userSockets instanceof Set) {
       const payload = JSON.stringify({
@@ -399,6 +408,7 @@ export const addParticipant = async (req, res) => {
        RETURNING left_at`,
       [chat_id, newUserId]
     );
+    await logParticipantAction(chat_id, newUserId, 'join');
     const payload = {
       type: "add_participant",
       chat_id,
@@ -601,4 +611,13 @@ export const deleteMessageForMe = async (req, res) => {
     res.status(500).json({ message: "Ошибка сервера" });
   }
 };
-
+const logParticipantAction = async (chatId, userId, action) => {
+  try {
+    await pool.query(
+      "INSERT INTO chat_participant_log (chat_id, user_id, action_type) VALUES ($1, $2, $3)",
+      [chatId, userId, action]
+    );
+  } catch (err) {
+    console.error("Audit Log Error:", err);
+  }
+};

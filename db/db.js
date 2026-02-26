@@ -139,6 +139,35 @@ async function createTable() {
   );
     `);
     await client.query(`
+      CREATE TABLE IF NOT EXISTS chat_participant_log (
+          id SERIAL PRIMARY KEY,
+          chat_id INT NOT NULL,
+          user_id INT NOT NULL,
+          action_type VARCHAR(20) NOT NULL, -- 'join', 'leave'
+          created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS auth_log (
+        id SERIAL PRIMARY KEY,
+        user_id INT REFERENCES users(id) ON DELETE CASCADE,
+        ip_address VARCHAR(45) NOT NULL, -- 45 символов хватает и для IPv4, и для IPv6
+        user_agent TEXT,
+        action_type VARCHAR(20) DEFAULT 'login',
+        created_at TIMESTAMP DEFAULT NOW()
+    );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS profile_log (
+          id SERIAL PRIMARY KEY,
+          user_id INT REFERENCES users(id) ON DELETE CASCADE,
+          field_name VARCHAR(50), -- 'username', 'avatar', 'bio'
+          old_value TEXT,
+          new_value TEXT,
+          created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_seller_geohash ON seller_profiles(geohash);
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_user_id ON chat_participants(user_id);`);
@@ -147,7 +176,12 @@ async function createTable() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chat_participants_chat_id_user_id ON chat_participants(chat_id, user_id);`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_messages_deleted_at ON messages(deleted_at) WHERE deleted_at IS NULL;`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_chats_updated_at ON chats (updated_at DESC);`);
-  } catch (error) {
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_participant_log_user ON chat_participant_log(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_participant_log_chat ON chat_participant_log(chat_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_auth_log_user_id ON auth_log(user_id);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_auth_log_created_at ON auth_log(created_at DESC);`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_profile_log_user ON profile_log(user_id);`);
+    } catch (error) {
     console.log("Ошибка при создании таблицы:", error);
   } finally {
     client.release();
