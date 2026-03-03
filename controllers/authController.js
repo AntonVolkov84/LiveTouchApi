@@ -80,7 +80,7 @@ export const register =  async (req, res) => {
 
 export const login = async (req, res) => {
     try {
-    const { password, public_key, expoToken } = req.body;
+    const { password, public_key, expoToken, fcm_token } = req.body;
     const email = req.body.email?.trim().toLowerCase();
     if (!email || !password || !public_key) {
       return res.status(422).json({ message: "Not enough data" });
@@ -105,8 +105,8 @@ export const login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
     await pool.query(
-      "UPDATE users SET public_key = $1, expo_push_token = $2 WHERE id = $3",
-      [public_key, expoToken || null, user.id]
+      "UPDATE users SET public_key = $1, expo_push_token = $2, fcm_token = $3 WHERE id = $4",
+      [public_key, expoToken || null, fcm_token || null, user.id]
     );
     const { accessToken, refreshToken } = generateTokens(user);
     await logAuthAction(user.id, req, 'login');

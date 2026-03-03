@@ -623,3 +623,46 @@ const logParticipantAction = async (chatId, userId, action) => {
     console.error("Audit Log Error:", err);
   }
 };
+
+export const declineCall = async (req, res) => {
+  const { chatId, sender, target } = req.body;
+  console.log("Cancel-call request:", { chatId, sender, target });
+
+  try {
+    await pool.query(
+      `UPDATE call_logs SET status = 'missed', ended_at = CURRENT_TIMESTAMP 
+       WHERE chat_id = $1 AND ended_at IS NULL`,
+      [chatId]
+    );
+
+    // Проверяем и число, и строку
+    const targetIdNum = Number(target);
+    const targetIdStr = String(target);
+    const targetDevices = clientsMap.get(targetIdNum) || clientsMap.get(targetIdStr);
+
+    if (targetDevices && targetDevices instanceof Set) {
+      const payload = JSON.stringify({ 
+        type: "call-ended", 
+        chatId: Number(chatId), 
+        sender: Number(sender) 
+      });
+      
+      console.log(`📡 Отправляем отмену юзеру ${target}. Устройств: ${targetDevices.size}`);
+      
+      targetDevices.forEach(socket => {
+        if (socket.readyState === 1) {
+          socket.send(payload);
+        } else {
+          console.log("⚠️ Сокет найден, но он не в readyState 1");
+        }
+      });
+    } else {
+      console.log(`❌ Юзер ${target} не найден в clientsMap. Доступные ID:`, Array.from(clientsMap.keys()));
+    }
+
+    res.sendStatus(200);
+  } catch (e) {
+    console.error("Ошибка в declineCall:", e);
+    res.status(500).send(e.message);
+  }
+};

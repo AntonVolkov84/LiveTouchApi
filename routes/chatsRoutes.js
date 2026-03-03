@@ -1,6 +1,6 @@
 import express from "express";
 import { authenticateToken } from "../middlewares/authenticateToken.js";
-import {createPrivateChat, addParticipant, deleteMessageAllParticipants, getUserChats, deleteMessageForMe, updateMessage, createGroupChat, getUnread, clearChatUnread, clearAllUnread, getChatParticipants, leaveChat, sendMessage, getMessages} from '../controllers/chatController.js'
+import {createPrivateChat, addParticipant, declineCall, deleteMessageAllParticipants, getUserChats, deleteMessageForMe, updateMessage, createGroupChat, getUnread, clearChatUnread, clearAllUnread, getChatParticipants, leaveChat, sendMessage, getMessages} from '../controllers/chatController.js'
 
 const router = express.Router();
 
@@ -11,6 +11,7 @@ router.post("/creategroup", authenticateToken, createGroupChat);
 router.post("/send", authenticateToken, sendMessage);
 router.post("/addparticipant", authenticateToken, addParticipant);
 router.get("/unread", authenticateToken, getUnread);
+router.post("/cancel-call", declineCall)
 router.get("/:chat_id/participants", authenticateToken, getChatParticipants);
 router.delete("/leave/:chatId", authenticateToken, leaveChat);
 router.get("/:chat_id", authenticateToken, getMessages);

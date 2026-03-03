@@ -13,6 +13,7 @@ import sellerRouter from "./routes/sellerRouter.js"
 import {sendExpoPush} from './controllers/chatController.js'
 import { pool} from './db/db.js';
 import { initTelegramBot } from './services/telegramBot.js';
+import {sendCallNotification} from './pushService.js'
 
 const app = express();
 
@@ -45,7 +46,6 @@ app.use("/seller", sellerRouter);
 
 app.post("/upload", upload.single("file"), minioController.uploadMinIO)
 app.post("/miniodata", minioController.addChatFile)
-
 
 
 const server = http.createServer(app);
@@ -88,10 +88,11 @@ wss.on("connection", (ws) => {
             });
           }
           const { rows: tokenRows } = await pool.query(
-          `SELECT expo_push_token FROM users WHERE id = $1`,
+          `SELECT expo_push_token, fcm_token FROM users WHERE id = $1`,
           [data.target] 
         );
         const expoToken = tokenRows[0]?.expo_push_token;
+        const fcmToken = tokenRows[0]?.fcm_token;
         const { rows: userRows } = await pool.query(
           `SELECT username, usersurname FROM users WHERE id = $1`,
           [data.sender]
@@ -99,7 +100,15 @@ wss.on("connection", (ws) => {
         const callerName = userRows.length
           ? `${userRows[0].usersurname} ${userRows[0].username}`.trim()
           : "Неизвестный";
-        if (expoToken) {
+          if (fcmToken) {
+          console.log(`🚀 Отправляем прямой FCM пуш для ${data.target}`);
+          await sendCallNotification(fcmToken, {
+            chatId: String(data.chatId),
+            callerId: String(data.sender), 
+            targetId: String(data.target),
+            callerName: callerName,
+          });
+        } else if (expoToken) {
           await sendExpoPush(
             expoToken,
             "Входящий звонок",
