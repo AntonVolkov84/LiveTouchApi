@@ -37,7 +37,8 @@ async function createTable() {
         created_at TIMESTAMP DEFAULT NOW(),
         updated_at TIMESTAMP DEFAULT NOW(),
         public_key TEXT,
-        expo_push_token TEXT
+        expo_push_token TEXT,
+        fcm_token TEXT
       );
     `);
     await client.query(`
@@ -165,6 +166,18 @@ async function createTable() {
           old_value TEXT,
           new_value TEXT,
           created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS call_logs (
+          id SERIAL PRIMARY KEY,
+          chat_id INTEGER,
+          caller_id INTEGER,
+          receiver_id INTEGER,
+          started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          ended_at TIMESTAMP,
+          duration INTEGER, -- в секундах
+          status TEXT -- 'missed', 'completed', 'rejected'
       );
     `);
     await client.query(`

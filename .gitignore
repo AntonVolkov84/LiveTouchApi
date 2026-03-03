@@ -24,3 +24,5 @@ build/
 .DS_Store
 Thumbs.db
 recaptcha-service-account.json
+livetouch-a7b82-11238dc9ec62.json
+service-account.json

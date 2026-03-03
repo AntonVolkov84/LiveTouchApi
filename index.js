@@ -105,9 +105,15 @@ wss.on("connection", (ws) => {
             "Входящий звонок",
             `Звонок от ${callerName}`,
             { callerId: data.sender, chatId: data.chatId, callerName },
-            "calls-fixed-v1"
+            "calls-fixed-v1",
+            "call"
           );
         }
+        const { rows } = await pool.query(
+        `INSERT INTO call_logs (chat_id, caller_id, receiver_id, status) 
+         VALUES ($1, $2, $3, $4) RETURNING id`,
+        [data.chatId, data.sender, data.target, 'initiated']
+         );
         try {
           if (targetWs && targetWs instanceof Set) {
             targetWs.forEach((socket) => {
@@ -135,6 +141,11 @@ wss.on("connection", (ws) => {
           ...data,
           sender: data.sender || null
         });
+        await pool.query(
+        `UPDATE call_logs SET status = 'active', started_at = CURRENT_TIMESTAMP 
+         WHERE chat_id = $1 AND caller_id = $2 AND status = 'initiated'`,
+        [data.chatId, data.target] // target для answer — это тот, кто звонил изначально
+        );
         if (targetWs && targetWs instanceof Set) {
           targetWs.forEach((socket) => {
             if (socket.readyState === 1) socket.send(payload);
@@ -151,6 +162,14 @@ wss.on("connection", (ws) => {
         break;
       }
       case "call-ended": {
+        await pool.query(
+        `UPDATE call_logs 
+         SET ended_at = CURRENT_TIMESTAMP, 
+             duration = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))::int,
+             status = CASE WHEN status = 'initiated' THEN 'missed' ELSE 'completed' END
+         WHERE chat_id = $1 AND (caller_id = $2 OR receiver_id = $2) AND ended_at IS NULL`,
+        [data.chatId, data.sender]
+         );
         pendingCalls.delete(data.target);
         pendingCalls.delete(data.sender);
         const senderWs = clientsMap.get(data.sender); 

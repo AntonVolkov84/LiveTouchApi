@@ -2,23 +2,17 @@ import { pool } from "../db/db.js";
 import { minioClient } from '../minio.js'
 import { clientsMap } from '../index.js'; 
 
-export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default") => {
+export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default", category = null) => {
   if (!expoToken) return;
  const message = {
   to: expoToken,
-  title: title,
-  body: body,
-  data: data,
-  sound: "default", 
+  title,
+  body,
+  data,
+  sound: "default",
   priority: "high",
-  channelId: channel,
-  android: {
-    channelId: channel,
-    priority: "high",
-  },
-  notification: {
-      channelId: channel,
-    }
+  channelId: channel,     
+  categoryId: category,    
 };
 try {
     const response = await fetch("https://exp.host/--/api/v2/push/send", {
@@ -30,73 +24,72 @@ try {
       },
       body: JSON.stringify(message),
     });
-    const resData = await response.json();
   } catch (error) {
     console.error("Error sending Expo push:", error);
   }
   }
 export const createPrivateChat = async (req, res) => {
   try {
-    const userId = req.user.id;  
+    const userId = req.user.id;
     const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ message: "Email обязателен" });
-    }
+    if (!email) return res.status(400).json({ message: "Email обязателен" });
     const otherUser = await pool.query("SELECT id FROM users WHERE email = $1", [email]);
-    if (otherUser.rows.length === 0) {
-      return res.status(404).json({ message: "Пользователь не найден" });
-    }
+    if (otherUser.rows.length === 0) return res.status(404).json({ message: "Пользователь не найден" });
     const otherUserId = otherUser.rows[0].id;
-    const existingChat = await pool.query(
-      `SELECT c.id FROM chats c
-       JOIN chat_participants cp1 ON c.id = cp1.chat_id AND cp1.user_id = $1
-       JOIN chat_participants cp2 ON c.id = cp2.chat_id AND cp2.user_id = $2
-       WHERE c.type = 'private'`,
+    const existingParticipants = await pool.query(
+      `SELECT cp.chat_id, cp.user_id, cp.left_at 
+       FROM chat_participants cp
+       JOIN chats c ON cp.chat_id = c.id
+       WHERE c.type = 'private' AND cp.chat_id IN (
+         SELECT chat_id FROM chat_participants WHERE user_id = $1
+         INTERSECT
+         SELECT chat_id FROM chat_participants WHERE user_id = $2
+       )`,
       [userId, otherUserId]
     );
     let chatId;
     let isRestored = false;
-    if (existingChat.rows.length > 0) {
-      chatId = existingChat.rows[0].id;
+    if (existingParticipants.rows.length > 0) {
+      chatId = existingParticipants.rows[0].chat_id;
       isRestored = true;
-      await pool.query(
-        `UPDATE chat_participants 
-         SET left_at = NULL, joined_at = NOW() 
-         WHERE chat_id = $1 AND (user_id = $2 OR user_id = $3)`,
-        [chatId, userId, otherUserId]
-      );
+      for (const row of existingParticipants.rows) {
+        if (row.left_at !== null) {
+          await pool.query(
+            `UPDATE chat_participants 
+             SET left_at = NULL, joined_at = NOW() 
+             WHERE chat_id = $1 AND user_id = $2`,
+            [chatId, row.user_id]
+          );
+          await logParticipantAction(chatId, row.user_id, 'join');
+        }
+      }
     } else {
-      const newChat = await pool.query(
-        "INSERT INTO chats(type) VALUES($1) RETURNING id",
-        ["private"]
-      );
+      const newChat = await pool.query("INSERT INTO chats(type) VALUES($1) RETURNING id", ["private"]);
       chatId = newChat.rows[0].id;
       await pool.query(
-        "INSERT INTO chat_participants(chat_id, user_id) VALUES ($1, $2), ($1, $3)",
+        "INSERT INTO chat_participants(chat_id, user_id, joined_at) VALUES ($1, $2, NOW()), ($1, $3, NOW())",
         [chatId, userId, otherUserId]
       );
+      await logParticipantAction(chatId, userId, 'join');
+      await logParticipantAction(chatId, otherUserId, 'join');
     }
-    await logParticipantAction(chatId, userId, 'join');
-    await logParticipantAction(chatId, otherUserId, 'join');
-    const payload = {
-      type: "chat_created", 
+    const payload = JSON.stringify({
+      type: "chat_created",
       chat_id: chatId,
       participants: [userId, otherUserId],
       createdAt: new Date().toISOString()
-    };
+    });
     [userId, otherUserId].forEach(id => {
-      const userSockets = clientsMap.get(id); 
+      const userSockets = clientsMap.get(id);
       if (userSockets instanceof Set) {
         userSockets.forEach(socket => {
-          if (socket.readyState === 1) {
-            socket.send(JSON.stringify(payload));
-          }
+          if (socket.readyState === 1) socket.send(payload);
         });
       }
     });
-  res.status(isRestored ? 200 : 201).json({ 
-      chatId, 
-      message: isRestored ? "Чат восстановлен из архива" : "Приватный чат создан" 
+    res.status(isRestored ? 200 : 201).json({
+      chatId,
+      message: isRestored ? "Чат обновлен" : "Приватный чат создан"
     });
   } catch (err) {
     console.error("createPrivateChat error:", err);
@@ -237,10 +230,11 @@ export const sendMessage = async (req, res) => {
     );
     const sender = userRes.rows[0];
     const { rows: participants } = await pool.query(
-      "SELECT user_id FROM chat_participants WHERE chat_id = $1",
+      "SELECT user_id, left_at FROM chat_participants WHERE chat_id = $1",
       [chat_id]
     );
-    const participantIds = participants.map(p => p.user_id).filter(id => id !== senderId);
+    const activeParticipants = participants.filter(p => p.left_at === null);
+    const participantIds = activeParticipants.map(p => p.user_id).filter(id => id !== senderId);
     if (participantIds.length > 0) {
     const { rows: alreadyUnread } = await pool.query(
         `SELECT user_id FROM unread WHERE chat_id = $1 AND user_id = ANY($2)`,
@@ -328,7 +322,7 @@ export const sendMessage = async (req, res) => {
       created_at: insertedRows[0]?.created_at || new Date().toISOString(),
       messages: insertedRows     
     };
-    participants.forEach(({ user_id }) => {
+    activeParticipants.forEach(({ user_id }) => {
       const sockets = clientsMap.get(user_id);
       if (sockets) {
         sockets.forEach(s => {
@@ -356,8 +350,15 @@ export const getMessages = async (req, res) => {
               u.username AS sender_name, u.usersurname AS sender_surname, u.avatar_url AS sender_avatar, u.public_key AS sender_public_key 
        FROM messages m
        JOIN users u ON m.sender_id = u.id
-       WHERE m.chat_id = $1 AND m.recipient_id = $2
-       AND m.deleted_at IS NULL
+       WHERE m.chat_id = $1 
+         AND m.recipient_id = $2
+         AND m.deleted_at IS NULL
+         -- ВОТ ЭТОТ КУСОК ОГРАНИЧИВАЕТ ИСТОРИЮ:
+         AND m.created_at >= (
+            SELECT COALESCE(MAX(created_at), '1970-01-01') 
+            FROM chat_participant_log 
+            WHERE chat_id = $1 AND user_id = $2 AND action_type = 'join'
+         )
        ORDER BY m.created_at DESC
        LIMIT $3 OFFSET $4`,
       [chat_id, userId, limit, offset]
@@ -438,12 +439,13 @@ export const getUnread = async (req, res) => {
   const userId = req.user.id;
   try {
     const { rows } = await pool.query(
-      `SELECT chat_id
-       FROM unread
-       WHERE user_id = $1`,
+      `SELECT u.chat_id
+       FROM unread u
+       JOIN chat_participants cp ON u.chat_id = cp.chat_id AND u.user_id = cp.user_id
+       WHERE u.user_id = $1 AND cp.left_at IS NULL`, 
       [userId]
     );
-    const unreadIds = rows.length > 0 ? rows.map(r => r.chat_id) : [];
+    const unreadIds = rows.map(r => r.chat_id);
     res.status(200).json({ unread: unreadIds });
   } catch (err) {
     console.error("getUnread error:", err);
