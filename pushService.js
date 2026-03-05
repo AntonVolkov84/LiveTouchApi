@@ -41,7 +41,7 @@ export const sendCallNotification = async (targetToken, callData) => {
     android: {
       priority: 'high',
       ttl: 0,
-          },
+    },
     data: {
       channelId: "calls-fixed-v72",
       display_title: 'Входящий вызов',

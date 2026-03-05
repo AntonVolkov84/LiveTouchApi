@@ -1,6 +1,7 @@
 import { pool } from "../db/db.js"; 
 import { minioClient } from '../minio.js'
 import { clientsMap } from '../index.js'; 
+import {sendMessageNotification} from '../pushService.js'
 
 export const sendExpoPush = async (expoToken, title, body, data = {}, channel = "default", category = null) => {
   if (!expoToken) return;
@@ -244,16 +245,29 @@ export const sendMessage = async (req, res) => {
     const idsToNotify = participantIds.filter(id => !alreadyUnreadIds.includes(id));
     if (idsToNotify.length > 0) {
         const { rows: tokenRows } = await pool.query(
-            `SELECT expo_push_token FROM users WHERE id = ANY($1)`,
+            `SELECT id, fcm_token, expo_push_token FROM users WHERE id = ANY($1)`,
             [idsToNotify]
         );
-        const expoTokens = tokenRows
-            .map(u => u.expo_push_token)
-            .filter(t => t && t.startsWith("ExponentPushToken"));
+        const fcmTargets = [];
+        const expoTokens = [];
+        tokenRows.forEach(user => {
+        if (user.fcm_token) {
+          fcmTargets.push(user.fcm_token);
+        } else if (user.expo_push_token && user.expo_push_token.startsWith("ExponentPushToken")) {
+          expoTokens.push(user.expo_push_token);
+        }
+        });
+        const title = chat_type === "group" ? chatName : `${sender.usersurname} ${sender.username}`;
+        const body = "Получено новое сообщение";
+        const pushData = { chat_id: String(chat_id), type: "message_new" };   
+        if (fcmTargets.length > 0) {
+        fcmTargets.forEach(token => {
+            sendMessageNotification(token, title, body, pushData)
+                .catch(err => console.error(`FCM Error for token ${token}:`, err));
+        });
+        }
         if (expoTokens.length > 0) {
-            const title = chat_type === "group" ? chatName : `${sender.usersurname} ${sender.username}`;
-            const body = "Получено новое сообщение";
-            sendExpoPush(expoTokens, title, body, { chat_id, type: "message_new" });
+            sendExpoPush(expoTokens, title, body, pushData);
         }
     }
 }
@@ -626,29 +640,21 @@ const logParticipantAction = async (chatId, userId, action) => {
 
 export const declineCall = async (req, res) => {
   const { chatId, sender, target } = req.body;
-  console.log("Cancel-call request:", { chatId, sender, target });
-
   try {
     await pool.query(
       `UPDATE call_logs SET status = 'missed', ended_at = CURRENT_TIMESTAMP 
        WHERE chat_id = $1 AND ended_at IS NULL`,
       [chatId]
     );
-
-    // Проверяем и число, и строку
     const targetIdNum = Number(target);
     const targetIdStr = String(target);
     const targetDevices = clientsMap.get(targetIdNum) || clientsMap.get(targetIdStr);
-
     if (targetDevices && targetDevices instanceof Set) {
       const payload = JSON.stringify({ 
         type: "call-ended", 
         chatId: Number(chatId), 
         sender: Number(sender) 
       });
-      
-      console.log(`📡 Отправляем отмену юзеру ${target}. Устройств: ${targetDevices.size}`);
-      
       targetDevices.forEach(socket => {
         if (socket.readyState === 1) {
           socket.send(payload);

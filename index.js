@@ -107,6 +107,7 @@ wss.on("connection", (ws) => {
             callerId: String(data.sender), 
             targetId: String(data.target),
             callerName: callerName,
+            sentAt: String(Date.now())
           });
         } else if (expoToken) {
           await sendExpoPush(
@@ -153,7 +154,7 @@ wss.on("connection", (ws) => {
         await pool.query(
         `UPDATE call_logs SET status = 'active', started_at = CURRENT_TIMESTAMP 
          WHERE chat_id = $1 AND caller_id = $2 AND status = 'initiated'`,
-        [data.chatId, data.target] // target для answer — это тот, кто звонил изначально
+        [data.chatId, data.target] 
         );
         if (targetWs && targetWs instanceof Set) {
           targetWs.forEach((socket) => {
