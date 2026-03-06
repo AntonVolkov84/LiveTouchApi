@@ -13,7 +13,7 @@ import sellerRouter from "./routes/sellerRouter.js"
 import {sendExpoPush} from './controllers/chatController.js'
 import { pool} from './db/db.js';
 import { initTelegramBot } from './services/telegramBot.js';
-import {sendCallNotification} from './pushService.js'
+import { sendMessageNotification} from './pushService.js'
 
 const app = express();
 
@@ -101,15 +101,17 @@ wss.on("connection", (ws) => {
           ? `${userRows[0].usersurname} ${userRows[0].username}`.trim()
           : "Неизвестный";
           if (fcmToken) {
-          console.log(`🚀 Отправляем прямой FCM пуш для ${data.target}`);
-          await sendCallNotification(fcmToken, {
-            chatId: String(data.chatId),
-            callerId: String(data.sender), 
-            targetId: String(data.target),
-            callerName: callerName,
-            sentAt: String(Date.now())
-          });
-        } else if (expoToken) {
+            const title = "Входящий звонок";
+            const body = `Звонок от ${callerName}`;
+            const pushData = { 
+              callerId: String(data.sender), 
+              chatId: String(data.chatId), 
+              callerName: String(callerName), 
+              type: "INCOMING_CALL"
+              };
+          await sendMessageNotification(fcmToken, title, body, pushData, 
+            "calls-fixed-v1", "INCOMING_CALL", String(data.chatId))
+         } else if (expoToken) {
           await sendExpoPush(
             expoToken,
             "Входящий звонок",
@@ -172,14 +174,43 @@ wss.on("connection", (ws) => {
         break;
       }
       case "call-ended": {
-        await pool.query(
-        `UPDATE call_logs 
-         SET ended_at = CURRENT_TIMESTAMP, 
-             duration = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))::int,
-             status = CASE WHEN status = 'initiated' THEN 'missed' ELSE 'completed' END
-         WHERE chat_id = $1 AND (caller_id = $2 OR receiver_id = $2) AND ended_at IS NULL`,
-        [data.chatId, data.sender]
-         );
+        const result = await pool.query(
+          `UPDATE call_logs 
+          SET ended_at = CURRENT_TIMESTAMP, 
+              duration = EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - started_at))::int,
+              status = CASE WHEN status = 'initiated' THEN 'missed' ELSE 'completed' END
+          WHERE chat_id = $1 AND (caller_id = $2 OR receiver_id = $2) AND ended_at IS NULL
+          RETURNING *`, 
+          [data.chatId, data.sender]
+        );
+        const callRecord = result.rows[0];
+        if (callRecord && callRecord.status === 'missed') {
+        const victimId = callRecord.receiver_id;
+        if (callRecord && callRecord.status === 'missed') {
+          const { rows: userRows } = await pool.query(
+          `SELECT username, usersurname FROM users WHERE id = $1`,
+          [data.sender]
+        );
+        const callerName = userRows.length
+          ? `${userRows[0].usersurname} ${userRows[0].username}`.trim()
+          : "Неизвестный";
+        const { rows: victimRows } = await pool.query(
+          `SELECT fcm_token FROM users WHERE id = $1`,
+          [victimId]
+        );
+        if (victimRows[0]?.fcm_token) {
+        await sendMessageNotification(
+            victimRows[0].fcm_token,
+            "Пропущенный вызов",
+            `Был звонок от ${callerName}`,
+            { type: "MISSED_CALL", chatId: String(data.chatId) },
+            "default",          
+            null,               
+            String(data.chatId) 
+          );
+        }
+      }
+    }
         pendingCalls.delete(data.target);
         pendingCalls.delete(data.sender);
         const senderWs = clientsMap.get(data.sender); 

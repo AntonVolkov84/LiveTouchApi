@@ -10,19 +10,26 @@ if (!admin.apps.length) {
     credential: admin.credential.cert(serviceAccount),
   });
 }
-export const sendMessageNotification = async (fcmToken, title, body, data = {}) => {
+export const sendMessageNotification = async (fcmToken, title, body, data = {}, channel = "default", category = null, tag = null) => {
   if (!fcmToken) return;
+  const stringData = {};
+  Object.keys(data).forEach(key => {
+    stringData[key] = String(data[key]);
+  });
   const message = {
     token: fcmToken,
     notification: {
       title: title,
       body: body,
     },
-    data: data, 
+    data: stringData, 
     android: {
       priority: 'high',
+      collapseKey: tag,
       notification: {
-        channelId: "default", 
+        channelId: channel, 
+        clickAction: category, 
+        tag: tag
       },
     },
   };
