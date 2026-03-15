@@ -175,9 +175,9 @@ export async function sendConfirmationEmail(to, token) {
   const confirmLink = `https://api.livetouch.chat/auth/confirm-email?token=${token}`;
   try {
     await resend.emails.send({
-      from: "LiveTouch <no-reply@livetouch.chat>",
+      from: "ЛайвТач <no-reply@livetouch.chat>",
       to,
-      subject: "Подтверждение регистрации в LiveTouch",
+      subject: "Подтверждение регистрации в ЛайвТач",
       html: `<p>Здравствуйте!</p>
              <p>Для подтверждения регистрации перейдите по ссылке:</p>
              <a href="${confirmLink}">${confirmLink}</a>`,
@@ -208,9 +208,9 @@ export const requestPasswordReset = async (req, res) => {
     );
     const resetLink = `https://api.livetouch.chat/auth/reset-password?token=${token}`;
      const data = await resend.emails.send({
-      from: "LiveTouch <no-reply@livetouch.chat>",
+      from: "ЛайвТач <no-reply@livetouch.chat>",
       to: email,
-      subject: "Восстановление пароля LiveTouch",
+      subject: "Восстановление пароля ЛайвТач",
       html: `
         <p>Здравствуйте, ${user.username}!</p>
         <p>Для восстановления пароля перейдите по ссылке:</p>

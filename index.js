@@ -12,7 +12,7 @@ import errorsRouter from "./routes/errorsRouter.js"
 import sellerRouter from "./routes/sellerRouter.js"
 import {sendExpoPush} from './controllers/chatController.js'
 import { pool} from './db/db.js';
-import { initTelegramBot } from './services/telegramBot.js';
+// import { initTelegramBot } from './services/telegramBot.js';
 import { sendMessageNotification} from './pushService.js'
 
 const app = express();
@@ -36,7 +36,7 @@ app.use(cors({
 
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ limit: "20mb", extended: true }));
-initTelegramBot();
+// initTelegramBot();
 const upload = multer({ dest: "uploads/" });
 
 app.use("/auth", authRoutes);
@@ -51,6 +51,7 @@ app.post("/miniodata", minioController.addChatFile)
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
 const pendingCalls = new Map();
+const chatRooms = new Map();
 export const clientsMap = new Map();
 wss.on("connection", (ws) => {
  ws.on("message", async(message) => {
@@ -60,6 +61,7 @@ wss.on("connection", (ws) => {
       switch(data.type) {
       case "init": {
       if (!clientsMap.has(data.userId)) {
+        ws.userId = data.userId;
         clientsMap.set(data.userId, new Set());
       }
         clientsMap.get(data.userId).add(ws);
@@ -110,7 +112,7 @@ wss.on("connection", (ws) => {
               type: "INCOMING_CALL"
               };
           await sendMessageNotification(fcmToken, title, body, pushData, 
-            "calls-fixed-v1", "INCOMING_CALL", String(data.chatId))
+            "calls-fixed-v1", null, String(data.chatId))
          } else if (expoToken) {
           await sendExpoPush(
             expoToken,
@@ -230,6 +232,75 @@ wss.on("connection", (ws) => {
           }
           break;
         }
+      case "join-chat": {
+          try {
+              const chatId = String(data.chatId || data.chat_id); 
+              const userId = String(data.userId || data.user_id);
+              console.log(`[JOIN] Chat: ${chatId}, User: ${userId}`);
+              ws.currentChatId = chatId; 
+              if (!chatRooms.has(chatId)) {
+                  chatRooms.set(chatId, new Set());
+              }
+              const room = chatRooms.get(chatId);
+              room.add(userId);
+              room.forEach(memberId => {
+                  if (String(memberId) === userId) return; 
+                  const targetSockets = clientsMap.get(Number(memberId));
+                  if (targetSockets instanceof Set) {
+                      targetSockets.forEach(s => {
+                          if (s.readyState === 1) {
+                              s.send(JSON.stringify({
+                                  type: "user_status_update",
+                                  user_id: userId,
+                                  status: "online",
+                                  chat_id: chatId
+                              }));
+                          }
+                      });
+                  }
+              });
+              const snapshot = {
+                  type: "room_snapshot",
+                  chat_id: chatId,
+                  online_users: Array.from(room).map(Number)
+              };
+              ws.send(JSON.stringify(snapshot));
+              console.log(`[SENT] Snapshot to User ${userId}:`, snapshot.online_users);
+          } catch (err) {
+              console.error("!!! Ошибка в join-chat !!!", err);
+          }
+          break;
+      }
+       case "typing": {
+        console.log(data, chatRooms)
+          const chatId = String(data.chatId || data.chat_id); 
+          const userId = String(data.userId || data.user_id);
+          const isTyping = data.isTyping;
+          const members = chatRooms.get(chatId);
+          if (!members) {
+              console.log(`[TYPING] Комната ${chatId} не найдена или пуста`);
+              break;
+          }
+          members.forEach(memberId => {
+              if (String(memberId) === String(userId)) return; 
+              const targetSockets = clientsMap.get(Number(memberId)) || clientsMap.get(String(memberId));
+              if (targetSockets) {
+                  targetSockets.forEach(s => {
+                      if (s.readyState === 1) {
+                          s.send(JSON.stringify({
+                              type: "user_typing_update",
+                              user_id: userId,
+                              chat_id: chatId,
+                              isTyping: isTyping
+                          }));
+                      }
+                  });
+              } else {
+                  console.log(`[TYPING] Сокеты для юзера ${memberId} не найдены в clientsMap`);
+              }
+          });
+          break;
+      }
       case "ice-candidate":
         if (!targetWs) {
         const pending = pendingCalls.get(data.target);
@@ -259,18 +330,45 @@ wss.on("connection", (ws) => {
       console.error("WS message error:", err);
     }
   });
-  ws.on("close", (code, reason) => {
-    for (const [userId, sockets] of clientsMap.entries()) {
-      if (sockets.has(ws)) {
-        sockets.delete(ws);
-        if (sockets.size === 0) {
-          clientsMap.delete(userId);
+  ws.on("close", () => {
+    const userId = ws.userId;
+    const chatId = ws.currentChatId;
+    if (userId) {
+        const uid = String(userId);
+        const userSockets = clientsMap.get(Number(uid)) || clientsMap.get(uid);
+        if (userSockets) {
+            userSockets.delete(ws);
+            if (userSockets.size === 0) {
+                clientsMap.delete(Number(uid));
+                clientsMap.delete(uid);
+                chatRooms.forEach((members, rId) => {
+                    const membersArray = Array.from(members).map(String);
+                    if (membersArray.includes(uid)) {
+                        members.delete(uid);
+                        members.delete(Number(uid));
+                        members.forEach(mId => {
+                            const targetSockets = clientsMap.get(Number(mId)) || clientsMap.get(String(mId));
+                            targetSockets?.forEach(s => {
+                                if (s.readyState === 1) {
+                                    try {
+                                        s.send(JSON.stringify({
+                                            type: "user_status_update",
+                                            user_id: uid, 
+                                            status: "offline",
+                                            chat_id: rId
+                                        }));
+                                    } catch (e) {
+                                        console.error("Ошибка при отправке оффлайна:", e);
+                                    }
+                                }
+                            });
+                        });
+                    }
+                });
+            }
         }
-        console.log(`Device disconnected for user ${userId}. Remaining: ${sockets.size || 0}`);
-        break;
-      }
     }
-  });
+});
   ws.on("error", (err) => {
   console.error("WS SERVER ERROR", err);
   });

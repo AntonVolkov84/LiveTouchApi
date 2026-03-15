@@ -35,7 +35,6 @@ export const sendMessageNotification = async (fcmToken, title, body, data = {}, 
   };
   try {
     const response = await admin.messaging().send(message);
-    console.log('✅ FCM пуш отправлен:', response);
     return response;
   } catch (error) {
     console.error('❌ Ошибка FCM пуша:', error);
